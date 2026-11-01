@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Build output
+build/
+dist/
+*.spec.bak
+
+# Rust launcher (cargo build)
+launcher/target/
+
+# libmpv is not distributed with this repository (see README: vendor/mpv)
+vendor/mpv/*.dll
+vendor/mpv/*.so*
+vendor/mpv/*.dylib
+
+# Editors and OS
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+.DS_Store

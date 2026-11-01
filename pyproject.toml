@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lumina-viewer"
+version = "1.0.0"
+description = "Lumina: Live Photo / Motion Photo desktop photo and video viewer"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+authors = [{ name = "Lumina" }]
+dependencies = [
+    "PyQt6>=6.6",
+    "pillow>=10.0",
+    "pillow-heif>=0.16",
+    "pillow-avif-plugin>=1.4",
+    "rawpy>=0.20",
+    "opencv-python-headless>=4.8",
+    "numpy>=1.26",
+    "python-mpv>=1.0.7",
+    "imagecodecs>=2024.1.1",
+    "resvg-py>=0.5",  # SVG (QtSvg yedek olarak kalir)
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
+[project.scripts]
+lumina = "app.main:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
