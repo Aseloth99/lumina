@@ -468,7 +468,8 @@ def file_icon(color: QColor | None = None) -> QIcon:
 
 
 def theme_dark_icon() -> QIcon:
-    """Hilal ay, seçili vurgu renginde (açık ve koyu menüde görünür)."""
+    """Hilal ay, orta gri (açık ve koyu menüde görünür); vurguya değil nötr renge bağlıdır. Renkler FlexiKey,
+    MediaCompressor ve TransferTCP'deki tema simgeleriyle aynıdır."""
 
     def draw(p: QPainter) -> None:
         moon = QPainterPath()
@@ -476,7 +477,7 @@ def theme_dark_icon() -> QIcon:
         bite = QPainterPath()
         bite.addEllipse(QRectF(12.5, 3.5, 17, 17))
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(QColor(_accent())))
+        p.setBrush(QBrush(QColor("#9a9a9a")))
         p.drawPath(moon.subtracted(bite))
 
     return _hidpi_icon(draw)
@@ -499,16 +500,17 @@ def theme_light_icon() -> QIcon:
 
 
 def theme_system_icon() -> QIcon:
-    """Yarı koyu / yarı açık daire (nötr gri), iki temada da çerçevesi görünür."""
+    """Yarı koyu / yarı açık daire (nötr gri), iki temada da çerçevesi görünür. Renkler FlexiKey, MediaCompressor ve
+    TransferTCP'deki tema simgeleriyle aynıdır."""
 
     def draw(p: QPainter) -> None:
         box = QRectF(6, 6, 20, 20)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(QColor("#3a3a3a")))
+        p.setBrush(QBrush(QColor("#6f6f6f")))
         p.drawEllipse(box)
-        p.setBrush(QBrush(QColor("#f5f5f5")))
+        p.setBrush(QBrush(QColor("#f2f2f2")))
         p.drawPie(box, 90 * 16, 180 * 16)
-        p.setPen(_pen(QColor("#9e9e9e"), 1.4))
+        p.setPen(_pen(QColor("#8c8c8c"), 1.4))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(box)
 
