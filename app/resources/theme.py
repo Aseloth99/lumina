@@ -175,11 +175,6 @@ def active_palette() -> dict:
     return palette(active_theme(), active_accent())
 
 
-def accent_ink(theme: str | None = None) -> str:
-    """Vurgunun düz yazı/simge olarak kullanıldığı renk (zeminde okunur)."""
-    return palette(theme or active_theme())["accent_text"]
-
-
 # ---------------------------------------------------------------------------------------------------------------
 # Ana pencere stil sayfası
 # ---------------------------------------------------------------------------------------------------------------
@@ -359,6 +354,12 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
         QPushButton[role="sys"]:hover {{
             background: {sys_hover};
         }}
+        QPushButton[role="sys"][active="true"] {{
+            background-color: {active_bg};
+        }}
+        QPushButton[role="sys"][active="true"]:hover {{
+            background-color: {active_hover_bg};
+        }}
         QPushButton[role="updatePill"] {{
             background-color: {p['fill']};
             color: {p['on_fill']};
@@ -483,6 +484,18 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
         QListWidget#filmstrip::item:selected,
         QListWidget#filmstrip::item:selected:active,
         QListWidget#filmstrip::item:selected:!active {{
+            background: transparent;
+            border: none;
+        }}
+        QListView#gallery {{
+            background: transparent;
+            border: none;
+            outline: none;
+        }}
+        QListView#gallery::item,
+        QListView#gallery::item:hover,
+        QListView#gallery::item:selected,
+        QListView#gallery::item:selected:!active {{
             background: transparent;
             border: none;
         }}

@@ -47,6 +47,7 @@ _INTERACTIVE_NAMES = {
     "livePlay",
     "liveOrb",
     "filmstrip",
+    "gallery",
     "detailsClose",
     "fileChip",
     "busyChip",
@@ -262,19 +263,6 @@ class FramelessWindow(QMainWindow):
             if child.objectName() in _INTERACTIVE_NAMES:
                 return True
             if isinstance(child, (QPushButton, QSlider, QMenu, QComboBox, QCheckBox, QTabBar, QAbstractButton)):
-                return True
-            child = child.parentWidget()
-        return False
-
-    def _zoomed_canvas_at(self, global_pos: QPoint) -> bool:
-        child = self.childAt(self.mapFromGlobal(global_pos))
-        canvas = getattr(self, "canvas", None)
-        player = getattr(self, "player", None)
-        surface = getattr(player, "widget", None) if player is not None else None
-        while child is not None and child is not self:
-            if canvas is not None and child is canvas and not getattr(canvas, "_fitted", True):
-                return True
-            if surface is not None and child is surface and getattr(surface, "zoomed", lambda: False)():
                 return True
             child = child.parentWidget()
         return False

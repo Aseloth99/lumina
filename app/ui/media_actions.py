@@ -37,6 +37,7 @@ class MediaActionsMixin:
     _shown_image: tuple[str, QImage] | None = None
     _rot_hint_path: str | None = None
     _edit_token = 0
+    _autoplaying = False
 
     # ------------------------------------------------------------------ kurulum
     def _init_media_actions(self) -> None:

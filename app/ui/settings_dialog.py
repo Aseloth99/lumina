@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -143,6 +143,8 @@ class SettingsDialog(ChromeDialog):
             self.nav_buttons.append(btn)
 
         sb_layout.addStretch()
+        self.sidebar = sidebar
+        self._fit_sidebar()
         body_layout.addWidget(sidebar)
 
         # Sağ İçerik Sayfaları (QStackedWidget) — Kaydırmasız doğrudan sayfalar
@@ -156,6 +158,15 @@ class SettingsDialog(ChromeDialog):
         if self.nav_buttons:
             self.nav_buttons[0].setChecked(True)
             self.stack.setCurrentIndex(0)
+
+    def _fit_sidebar(self) -> None:
+        """Seçili sekme kalın yazılır; en uzun ad kalınken de sığsın (TR "Canlı Fotoğraf" 150 px'te kırpılıyordu)."""
+        font = QFont(self.nav_buttons[0].font())
+        font.setPixelSize(13)
+        font.setBold(True)
+        text = max(QFontMetrics(font).horizontalAdvance(b.text()) for b in self.nav_buttons)
+        # 8 + 8 kenar boşluğu + 2 çerçeve, 10 sol dolgu, 16 simge + 4 ara, 16 sağ dolgu, 8 nefes payı
+        self.sidebar.setFixedWidth(max(150, text + 72))
 
     def _switch_tab(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -335,6 +346,7 @@ class SettingsDialog(ChromeDialog):
             self.nav_buttons[0].setText(self._t("tab_general"))
             self.nav_buttons[1].setText(self._t("tab_live_photo"))
             self.nav_buttons[2].setText(self._t("tab_about"))
+            self._fit_sidebar()
 
         if hasattr(self, "card_lang"):
             self.card_lang.lbl_title.setText(self._t("language"))

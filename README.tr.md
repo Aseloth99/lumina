@@ -34,6 +34,8 @@ SVG, HDR ekran görüntüleri ve yaygın video kapsayıcıları. Arayüz, koyu, 
 - libmpv ile **GPU hızlandırmalı video** (Windows'ta Direct3D 11): kaydırma çubuğunda önizleme karesi, ses ve altyazı parçası seçimi,
   kare kare ilerleme, hız ayarı ve uzun videolarda "kaldığınız yerden devam".
 - **Klasörde gezinme**: ok tuşları, küçük resim şeridi, slayt gösterisi ve klasörde dosya belirince otomatik güncelleme.
+- **Galeri görünümü** (`G`): klasörün tamamı küçük resim ızgarası olarak; video süresi ve Canlı rozetleri, boyutu değişen karolar,
+  arka planda üretilip diskte saklanan küçük resimler. Binlerce dosyalı klasörlerde de akıcı kalır.
 - **Hafif düzenleme ve dosya işleri**: kırpma, JPEG'de kayıpsız döndürme (yalnızca EXIF yönü), yeniden adlandırma, farklı kaydetme,
   klasöre taşıma/kopyalama ve geri alınabilir Geri Dönüşüm Kutusu silmesi.
 - **Ayrıntılar paneli**: dosya bilgisi, EXIF (kamera, lens, konum), çözünürlük ve histogram.
@@ -80,6 +82,7 @@ eşleşen videoları, çift aynı adı taşısın diye yeniden adlandırır. Yal
 | Yakınlaştırma ve kaydırma | Fare tekerleği, `+` / `-`, sürükleyerek kaydırma; çift tıklama tam ekrandır. |
 | Döndürme | `R` / `L` ya da araç çubuğu düğmesi. |
 | Klasörde gezinme | Ok tuşları ya da `A` / `D`, `Home` / `End`, küçük resim şeridi, dört sıralama (ad ve tarih, artan ya da azalan). |
+| Galeri | `G` ya da başlık çubuğundaki ızgara düğmesi. Geçerli sıralamaya uyar ve baktığınız dosyayı seçili getirir; ok tuşları, `Home` / `End` ve `PgUp` / `PgDn` seçimi taşır, `Enter` ya da çift tıklama açar, `Esc` ya da `G` geri döner. `Ctrl` + fare tekerleği ya da `+` / `-` karo boyutunu değiştirir (hatırlanır). Sağ tık dosya işlerini açar; silme, geri alma, yeniden adlandırma ve kopyalama ızgarada da çalışır, karolar başka uygulamalara sürüklenebilir. |
 | Slayt gösterisi | `F5`; `Esc` durdurur. |
 | Ayrıntılar paneli | `I` ya da `Alt+Enter`: dosya bilgisi, EXIF, çözünürlük, histogram. |
 | Tam ekran | `F11` ya da çift tıklama; boştayken arayüz gizlenir. |
@@ -93,7 +96,7 @@ eşleşen videoları, çift aynı adı taşısın diye yeniden adlandırır. Yal
 | Kaydırma önizlemesi | Kaydırma çubuğunun üzerine gelince hedef karenin küçük resmi. |
 | Parçalar | Ses ve altyazı seçimi (menü yalnızca dosyada birden fazla parça varsa görünür); `V` ve `B` altyazıyı ve sesi döngüyle değiştirir. Dış altyazı dosyaları menüden açılabilir. |
 | Kare ve hız | `,` / `.` bir kare ilerletir/geri alır; `[` `]` (ayrıca `<` `>` ve `Ctrl+Yukarı` / `Ctrl+Aşağı`) hızı değiştirir; `Backspace` sıfırlar; `S` geçerli kareyi PNG olarak kaydeder. |
-| Döngü ve devam | `Ctrl+L` döngüyü açar; 3 dakikadan uzun videolarda son konum hatırlanır (Ayarlar'dan kapatılabilir). |
+| Döngü ve devam | `Ctrl+L` döngüyü açar; 3 dakikadan uzun videolarda son konum hatırlanır (Ayarlar'dan kapatılabilir). Döngü kapalıyken video bitince `Sol` / `Sağ` sarmak yerine dosya değiştirir. |
 | Ses çıkışı | Çıkış aygıtı Ayarlar'dan seçilir. |
 
 ### Düzenleme ve Dosya İşleri
@@ -162,13 +165,15 @@ py -3.12 -m app [dosya-ya-da-klasör]
 
 | İşlem | Tuşlar |
 |---|---|
-| Önceki / sonraki dosya | `Sol` / `Sağ`, `A` / `D` (video oynarken oklar 5 sn atlar) |
-| 15 sn atla | `Shift+Sol` / `Shift+Sağ` |
+| Önceki / sonraki dosya | `Sol` / `Sağ`, `A` / `D`, `PgUp` / `PgDn` (video oynarken oklar 5 sn atlar; oklarla gezinirken kendiliğinden oynayan videoda ilk 3 saniye oklar dosya değiştirmeyi sürdürür, video bitince (döngü kapalı) yine dosya değiştirir; `A` / `D` ve `PgUp` / `PgDn` her zaman dosya değiştirir) |
+| 15 sn atla | `Shift+Sol` / `Shift+Sağ` (ilk 3 saniyede ve video bittikten sonra da her zaman sarar) |
+| Galeriyi aç / kapat | `G` (`Esc` de çıkarır); galeride `Enter` seçili dosyayı açar, `+` / `-` ya da `Ctrl` + tekerlek karo boyutunu değiştirir |
 | İlk / son dosya | `Home` / `End` |
 | Oynat / duraklat (video, Canlı Fotoğraf) | `Space` |
 | Kare kare ilerle | `,` / `.` ya da `Ctrl+Sol` / `Ctrl+Sağ` |
 | Hızı azalt / artır / sıfırla | `[` / `]`, `<` / `>`, `Ctrl+Aşağı` / `Ctrl+Yukarı`; `Backspace` sıfırlar |
 | Döngü | `Ctrl+L` |
+| Sesi kapat / aç, ses düzeyi | `M`, `Yukarı` / `Aşağı` |
 | Altyazı / ses parçası | `V` / `B` |
 | Geçerli kareyi kaydet | `S` |
 | Yakınlaştır / uzaklaştır | `+` ya da `=` / `-` |
@@ -194,7 +199,8 @@ py -3.12 -m app [dosya-ya-da-klasör]
 | **Hakkında** | Sürüm, "Güncellemeleri Otomatik Kontrol Et", "Güncellemeleri Otomatik Kur", elle güncelleme denetimi, site bağlantısı. |
 
 Ayarlar `QSettings` ile saklanır (Windows kayıt defterinde `HKCU\Software\Lumina`). Video devam konumları
-`%LOCALAPPDATA%\Lumina\resume.json` dosyasında, çökme günlüğü `%LOCALAPPDATA%\Lumina\logs\crash.log` dosyasındadır.
+`%LOCALAPPDATA%\Lumina\resume.json` dosyasında, galeri küçük resimleri `%LOCALAPPDATA%\Lumina\thumbs\` klasöründe (yaklaşık 320 MB'ın
+altında tutulur, önce en eskiler silinir), çökme günlüğü `%LOCALAPPDATA%\Lumina\logs\crash.log` dosyasındadır.
 
 ## Güncelleme ve Duyurular
 
@@ -237,6 +243,7 @@ lumina/
 │   │   ├── main_window.py   ana pencere; media_actions.py düzenleme / dosya eylemleri karışımı
 │   │   ├── canvas.py        QGraphicsView tuvali (sığdır, doldur, yakınlaştır, kaydır)
 │   │   ├── player.py        libmpv gömme, OpenCV yedeği
+│   │   ├── gallery.py       küçük resim ızgarası (arka planda üretim, bellek ve disk önbelleği)
 │   │   ├── filmstrip.py, details_panel.py, settings_dialog.py, update_dialog.py, tray.py ...
 │   │   └── message_box.py   QMessageBox yerine kullanılan özel mesaj kutuları
 │   └── resources/           temalar, stiller, dil dizgileri (tr / en), simge

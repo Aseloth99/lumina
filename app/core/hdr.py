@@ -131,10 +131,3 @@ def hdr_array_to_pil(arr: np.ndarray):
     if alpha is not None:
         img.putalpha(Image.fromarray(alpha, "L"))
     return img
-
-
-def decode_jxr(data: bytes):
-    """JPEG XR baytlarını PIL.Image'a çözer (HDR ise SDR'ye ton eşlenmiş)."""
-    import imagecodecs
-
-    return hdr_array_to_pil(imagecodecs.jpegxr_decode(data))

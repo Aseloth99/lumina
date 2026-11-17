@@ -29,6 +29,7 @@ from app.ui.message_box import MessageBox  # noqa: E402
 
 from app.core import self_update as su  # noqa: E402
 from app.core import update_installer as ui  # noqa: E402
+from app.core.version import get_version  # noqa: E402
 
 
 def fake_pe(machine: int = 0x8664, payload: bytes = b"") -> bytes:
@@ -49,6 +50,9 @@ def make_zip(entries: dict) -> bytes:
 NEW_EXE = fake_pe(0x8664, b"-yeni-surum" * 2000)
 ZIP = make_zip({"Lumina/Lumina.exe": NEW_EXE, "Lumina/okubeni.txt": b"yan dosya"})
 SHA = hashlib.sha256(ZIP).hexdigest()
+# teklif edilen sürüm her zaman çalışandan bir yama yukarıda (sabit "1.0.1" sürüm atlayınca eskiyordu)
+_major, _minor, _patch = get_version().split(".")
+NEWER = f"{_major}.{_minor}.{int(_patch) + 1}"
 
 
 def pump(cond, timeout: float = 15.0) -> bool:
@@ -186,7 +190,7 @@ class FlowTest(unittest.TestCase):
             return f.read()
 
     def offer(self, service, checksum=SHA, mandatory=False):
-        service._on_available("1.0.1", self.url, "<p>Yenilikler</p>", mandatory, len(ZIP), checksum)
+        service._on_available(NEWER, self.url, "<p>Yenilikler</p>", mandatory, len(ZIP), checksum)
 
     def listing(self):
         return sorted(os.listdir(self.folder))
@@ -284,7 +288,7 @@ class FlowTest(unittest.TestCase):
         service = self.service(auto=True)
         self.offer(service)
         self.assertTrue(pump(lambda: service._ready is not None, 20), "sessiz indirme tamamlanmadı")
-        self.assertEqual(service._ready.version, "1.0.1")
+        self.assertEqual(service._ready.version, NEWER)
         self.assertIsNotNone(self._stamp(), "indirme bitince denetim damgası atıldı")
         self.assertEqual(self.read(self.exe), self.old, "çıkıştan önce hiçbir şey değişmez")
         self.assertIsNone(service.dialog, "pencere/kutu yok")
@@ -359,7 +363,7 @@ class FlowTest(unittest.TestCase):
 
         make_settings().setValue("declined_update_version", "1.0.0")  # eski bir sürüme 'Daha Sonra' denmişti
         service = self.service(auto=True)
-        self.offer(service)  # 1.0.1
+        self.offer(service)  # NEWER
         self.assertTrue(pump(lambda: service._ready is not None, 20))
         service.shutdown()
         self.assertEqual(self.read(self.exe), NEW_EXE)

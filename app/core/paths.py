@@ -41,9 +41,3 @@ def get_user_data_dir(app_id: str = APP_ID) -> Path:
         return Path.home() / "Library" / "Application Support" / app_id
     xdg = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(xdg) / app_id
-
-
-def ensure_user_data_dir(app_id: str = APP_ID) -> Path:
-    folder = get_user_data_dir(app_id)
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder

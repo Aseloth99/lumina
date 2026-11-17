@@ -138,16 +138,6 @@ def pause_icon(size: int = 20, color: QColor | None = None) -> QIcon:
     return QIcon(pix)
 
 
-def stop_icon(size: int = 20, color: QColor | None = None) -> QIcon:
-    color = color or QColor("#f5f5f5")
-    pix, p = _pixmap(32)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QBrush(color))
-    p.drawRoundedRect(QRectF(10, 10, 12, 12), 2, 2)
-    p.end()
-    return QIcon(pix)
-
-
 def frame_step_icon(forward: bool = True, color: QColor | None = None) -> QIcon:
     """Kare kare ilerleme: üçgen + dikey çubuk (|▶ / ◀|)."""
     color = color or QColor("#e0e0e0")
@@ -324,20 +314,6 @@ def arrow_icon(left: bool = True, color: QColor | None = None) -> QIcon:
     return icon
 
 
-def chevron_icon(up: bool = True, color: QColor | None = None) -> QIcon:
-    color = color or QColor("#e0e0e0")
-    pix, p = _pixmap()
-    p.setPen(_pen(color, 2.1))
-    if up:
-        p.drawLine(QPointF(8, 19), QPointF(16, 11))
-        p.drawLine(QPointF(16, 11), QPointF(24, 19))
-    else:
-        p.drawLine(QPointF(8, 13), QPointF(16, 21))
-        p.drawLine(QPointF(16, 21), QPointF(24, 13))
-    p.end()
-    return QIcon(pix)
-
-
 def chevron_horizontal_icon(right: bool = True, color: QColor | None = None) -> QIcon:
     """Film şeridi açma/kapama için sağa/sola ok ikonu."""
     color = color or QColor("#e0e0e0")
@@ -438,35 +414,6 @@ def folder_icon(color: QColor | None = None) -> QIcon:
     return QIcon(pix)
 
 
-def sort_icon(color: QColor | None = None) -> QIcon:
-    color = color or QColor("#e0e0e0")
-    pix, p = _pixmap()
-    p.setPen(_pen(color, 1.8))
-    # Üç yatay sıralama çizgisi
-    p.drawLine(QPointF(6, 10), QPointF(17, 10))
-    p.drawLine(QPointF(6, 16), QPointF(14, 16))
-    p.drawLine(QPointF(6, 22), QPointF(10, 22))
-    # Sağda aşağı yönlü ok
-    p.drawLine(QPointF(22, 9), QPointF(22, 23))
-    p.drawLine(QPointF(19, 20), QPointF(22, 23))
-    p.drawLine(QPointF(25, 20), QPointF(22, 23))
-    p.end()
-    return QIcon(pix)
-
-
-def file_icon(color: QColor | None = None) -> QIcon:
-    color = color or QColor("#e0e0e0")
-    pix, p = _pixmap()
-    p.setPen(_pen(color, 1.8))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawRoundedRect(QRectF(9, 6, 14, 20), 2.0, 2.0)
-    p.drawLine(QPointF(12, 12), QPointF(20, 12))
-    p.drawLine(QPointF(12, 16), QPointF(20, 16))
-    p.drawLine(QPointF(12, 20), QPointF(17, 20))
-    p.end()
-    return QIcon(pix)
-
-
 def theme_dark_icon() -> QIcon:
     """Hilal ay, orta gri (açık ve koyu menüde görünür); vurguya değil nötr renge bağlıdır. Renkler FlexiKey,
     MediaCompressor ve TransferTCP'deki tema simgeleriyle aynıdır."""
@@ -528,6 +475,19 @@ def apps_icon(color: QColor | None = None) -> QIcon:
     return QIcon(pix)
 
 
+def gallery_icon(color: QColor | None = None) -> QIcon:
+    """Galeri (küçük resim ızgarası): 2×2 yuvarlak köşeli çerçeve, pencere düğmeleriyle aynı çizgi kalınlığı."""
+    color = color or QColor("#e0e0e0")
+
+    def draw(p: QPainter) -> None:
+        p.setPen(_pen(color, 1.8))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for x, y in ((7.5, 7.5), (17.5, 7.5), (7.5, 17.5), (17.5, 17.5)):
+            p.drawRoundedRect(QRectF(x, y, 7.0, 7.0), 1.8, 1.8)
+
+    return _hidpi_icon(draw)
+
+
 def shell_icon(color: QColor | None = None) -> QIcon:
     color = color or QColor("#e0e0e0")
     pix, p = _pixmap()
@@ -535,33 +495,6 @@ def shell_icon(color: QColor | None = None) -> QIcon:
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawRoundedRect(QRectF(7, 9, 18, 14), 2.0, 2.0)
     p.drawLine(QPointF(7, 13), QPointF(25, 13))
-    p.end()
-    return QIcon(pix)
-
-
-def autoplay_icon(color: QColor | None = None) -> QIcon:
-    return play_icon(20, color or QColor("#e0e0e0"))
-
-
-def copy_icon(color: QColor | None = None) -> QIcon:
-    color = color or QColor("#e0e0e0")
-    pix, p = _pixmap()
-    p.setPen(_pen(color, 1.7))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawRoundedRect(QRectF(8, 10, 12, 14), 1.8, 1.8)
-    p.drawRoundedRect(QRectF(12, 6, 12, 14), 1.8, 1.8)
-    p.end()
-    return QIcon(pix)
-
-
-def print_icon(color: QColor | None = None) -> QIcon:
-    color = color or QColor("#e0e0e0")
-    pix, p = _pixmap()
-    p.setPen(_pen(color, 1.7))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawRoundedRect(QRectF(7, 14, 18, 10), 1.8, 1.8)
-    p.drawRect(QRectF(10, 6, 12, 8))
-    p.drawLine(QPointF(10, 20), QPointF(22, 20))
     p.end()
     return QIcon(pix)
 
@@ -580,14 +513,6 @@ def undo_icon(color: QColor | None = None) -> QIcon:
 
 
 _FLAG_ICONS_CACHE: dict[str, QIcon] = {}
-
-
-def flag_tr_icon() -> QIcon:
-    return language_flag_icon("tr")
-
-
-def flag_en_icon() -> QIcon:
-    return language_flag_icon("en")
 
 
 def language_flag_icon(code: str) -> QIcon:
@@ -701,39 +626,6 @@ def language_flag_icon(code: str) -> QIcon:
     icon = QIcon(pix)
     _FLAG_ICONS_CACHE[cache_key] = icon
     return icon
-
-
-def globe_icon(color=None, size: int = 20) -> QIcon:
-    """Evrensel dil küre ikonu."""
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen
-    from PyQt6.QtCore import Qt, QPointF
-
-    if QApplication.instance() is None:
-        return QIcon()
-
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    if color is None:
-        c = QColor(_accent())
-    elif isinstance(color, str):
-        c = QColor(color)
-    else:
-        c = color
-    pen = QPen(c, 1.5)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    r = (size - 4) / 2.0
-    cx, cy = size / 2.0, size / 2.0
-    p.drawEllipse(QPointF(cx, cy), r, r)
-    p.drawLine(QPointF(cx - r, cy), QPointF(cx + r, cy))
-    p.drawLine(QPointF(cx, cy - r), QPointF(cx, cy + r))
-    p.drawEllipse(QPointF(cx, cy), r * 0.55, r)
-    p.end()
-    return QIcon(pix)
 
 
 # --- Renkli menü ikonları -------------------------------------------------------------------------
@@ -1139,6 +1031,7 @@ _MENU_TINTED = {
     "rotate_left": lambda: rotate_icon(False, _c("teal")),
     "fullscreen": lambda: fullscreen_icon(_c("indigo")),
     "undo": lambda: undo_icon(_c("orange")),
+    "gallery": lambda: gallery_icon(_c("sky")),
 }
 
 _MENU_ICON_CACHE: dict[str, QIcon] = {}

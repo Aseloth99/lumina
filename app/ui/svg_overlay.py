@@ -151,9 +151,6 @@ class SvgPixmapItem(QGraphicsPixmapItem):
     def has_overlay(self) -> bool:
         return self._overlay is not None
 
-    def overlay_rect(self) -> QRectF:
-        return QRectF(self._overlay_rect)
-
     def overlay_image(self) -> QImage | None:
         return self._overlay
 
