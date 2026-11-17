@@ -15,7 +15,6 @@ from PyQt6.QtCore import (
     QMimeData,
     QPoint,
     QRect,
-    QSettings,
     QSize,
     Qt,
     QThreadPool,
@@ -24,7 +23,6 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction,
-    QDesktopServices,
     QActionGroup,
     QColor,
     QCursor,
@@ -127,6 +125,7 @@ from app.ui.icons import (
     folder_icon,
     frame_step_icon,
     fullscreen_icon,
+    gallery_icon,
     info_icon,
     loop_icon,
     maximize_icon,
@@ -172,6 +171,10 @@ SYSTEM_INTEGRATION = sys.platform == "win32"
 
 # İlk kare bu süre içinde çizilmezse (çok büyük/yavaş görsel, gizli pencere) bekletilen yan işler yine başlar.
 FRAME_GATE_MAX_MS = 2500
+
+# Gezinerek gelinen video kendiliğinden oynamaya başladıktan sonra ← / → bu kadar süre gezinmeyi sürdürür
+# (oynatma BAŞLADIĞI andan sayılır; yavaş açılan dosyada açılış süresi pencereden yenmez).
+NAV_GRACE_MS = 3000
 
 # MainWindow.eventFilter'ın kullandığı olay türleri: ses düğmesi/popup (Enter/Leave/Wheel),
 # tam ekranda arayüzü uyandırma ve Delete kısayolu (fare/klavye). Diğer her olay doğrudan geçer.
@@ -246,6 +249,10 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._details_on = False
         self._update_badge = False
         self._update_version = ""
+        # Galeri (G): klasörün küçük resim ızgarası; ilk açılışta kurulur.
+        self._gallery_on = False
+        self.gallery = None
+        self._select_after_scan: str | None = None  # yeniden taramadan sonra seçilecek dosya adı (küçük harf)
 
         self.temps = TempVideoStore()
         self.uuid_cache = FolderUuidCache(self)
@@ -258,6 +265,16 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._slideshow_timer = QTimer(self)
         self._slideshow_timer.setInterval(3500)
         self._slideshow_timer.timeout.connect(self._slideshow_step)
+
+        # Gezinme penceresi (bkz. _nav_or_seek): gezinerek gelinen video kendiliğinden oynamaya başladıysa
+        # ilk NAV_GRACE_MS boyunca ← / → sarmak yerine gezinmeyi sürdürür.
+        self._browsing = False  # sıradaki display_current bir gezinmenin sonucu mu
+        self._nav_grace_wanted = False  # gösterilen öğeye gezinerek gelindi
+        self._nav_grace = False  # pencere açık
+        self._nav_grace_timer = QTimer(self)
+        self._nav_grace_timer.setSingleShot(True)
+        self._nav_grace_timer.setInterval(NAV_GRACE_MS)
+        self._nav_grace_timer.timeout.connect(self._end_nav_grace)
 
         self._cursor_blank = False
         self._idle_timer = QTimer(self)
@@ -349,6 +366,9 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if not hasattr(self, "dock_wrap") or not hasattr(self, "bottom_dock"):
             return
         self._ensure_dock_in_viewer()
+        if self._gallery_on:
+            self.dock_wrap.hide()  # galeride alt bar yok: ızgara pencerenin altına kadar uzanır
+            return
         self.dock_wrap.show()
         self.dock_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.dock_wrap.setMinimumWidth(0)
@@ -376,6 +396,9 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             if hasattr(self, "viewer_host"):
                 self.viewer_host.setContentsMargins(0, 46, 0, 0)
             self._layout_window_dock()
+        if self.gallery is not None:
+            # Tam ekranda kapsüller ızgaranın üstünde yüzer: ilk satır onların altından başlasın.
+            self.gallery.set_top_inset(52 if self.isFullScreen() else 0)
 
         if hasattr(self, "stage"):
             self.stage.layout_chrome()
@@ -582,6 +605,11 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.btn_update.clicked.connect(self._open_pending_update)
         self.btn_update.setVisible(False)
         nav.addWidget(self.btn_update)
+
+        self.btn_gallery = self._sys_button()
+        self.btn_gallery.clicked.connect(self.toggle_gallery)
+        self.btn_gallery.hide()
+        nav.addWidget(self.btn_gallery)
 
         self.btn_settings = self._sys_button()
         self.btn_settings.clicked.connect(self.show_settings_menu)
@@ -954,6 +982,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._refresh_audio_control()
         self._refresh_strip_icon()
         self.btn_settings.setIcon(more_icon(ink))
+        self.btn_gallery.setIcon(gallery_icon(ink))
         self.btn_min.setIcon(minimize_icon(ink))
         self._refresh_max_icon()
         self.details.set_close_icon(ink)
@@ -1006,7 +1035,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         muted = self.player.muted
         self.btn_audio.setIcon(volume_icon(muted, ink))
         tt = self.t("unmute" if muted else "mute")
-        self.btn_audio.setToolTip(f"{tt} (M) · {self.player.volume}%")
+        self.btn_audio.setToolTip(f"{tt} (M · ↑ / ↓) · {self.player.volume}%")
         self.btn_audio.setProperty("muted", "true" if muted else "false")
         _polish(self.btn_audio)
         popup = getattr(self, "volume_popup", None)
@@ -1025,10 +1054,37 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._refresh_live_overlays()
 
     def toggle_mute(self) -> None:
+        self._end_nav_grace()
         self.player.toggle_muted()
         if hasattr(self, "volume_popup"):
             self.volume_popup.set_value(self.player.volume)
         self._refresh_audio_control()
+
+    def _audio_keys_apply(self) -> bool:
+        """Ses kısayolları yalnızca ses düğmesi görünürken (sesi olan video / Live Photo) çalışır."""
+        return self.current_match is not None and self.current_idx >= 0 and self._has_audio
+
+    def _mute_key(self) -> None:
+        if self._audio_keys_apply():
+            self.toggle_mute()
+            self._flash_volume_popup()
+
+    def _volume_key(self, delta: int) -> None:
+        if not self._audio_keys_apply():
+            return
+        self._end_nav_grace()
+        if self.player.muted and delta > 0:
+            self.player.set_muted(False)  # sesi yükselten kişi duymak ister
+        self.player.set_volume(max(0, min(100, self.player.volume + delta)))
+        self._refresh_audio_control()
+        self._flash_volume_popup()
+
+    def _flash_volume_popup(self) -> None:
+        """Klavyeyle ses değişince düzeyi kısa süre göster (fare üzerinde değilken kendiliğinden kapanır)."""
+        if not hasattr(self, "volume_popup") or not self.btn_audio.isVisible():
+            return
+        self._show_volume_popup()
+        self._vol_timer.start(1200)
 
     def _show_volume_popup(self) -> None:
         if not hasattr(self, "volume_popup") or not hasattr(self, "btn_audio"):
@@ -1059,6 +1115,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.volume_popup.hide()
 
     def _on_volume_popup_changed(self, val: int) -> None:
+        self._end_nav_grace()
         self.player.set_volume(val)
         self._refresh_audio_control()
 
@@ -1178,6 +1235,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             self._fullscreen_backdrop(True)
         self.bottom_dock.set_glass(glass, border)
         self.filmstrip.set_placeholder_color(thumb)
+        if self.gallery is not None:
+            self.gallery.set_palette(pal)
         self.details.apply_chrome(resolved == "dark")
         self._refresh_icons()
         self._refresh_mode_buttons()
@@ -1188,7 +1247,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
 
     def retranslate_ui(self) -> None:
         install_qt_translations(self.lang)
-        self.setWindowTitle(self.t("title"))
+        self._sync_window_title()
         self._apply_update_pill()
         if hasattr(self, "lbl_brand"):
             self._fit_brand_text(self.stage.width() or 10_000)
@@ -1200,8 +1259,11 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.btn_fit.setToolTip(f"{self.t('fit')} (0)")
         self.btn_fill.setToolTip(self.t("fill"))
         self.btn_settings.setToolTip(self.t("settings"))
-        self.btn_prev.setToolTip(f"{self.t('prev')} (← / A)")
-        self.btn_next.setToolTip(f"{self.t('next')} (→ / D)")
+        self._refresh_gallery_button()
+        if self.gallery is not None:
+            self.gallery.set_live_text(self.t("live_badge"))
+        self.btn_prev.setToolTip(f"{self.t('prev')} (← / A / PgUp)")
+        self.btn_next.setToolTip(f"{self.t('next')} (→ / D / PgDn)")
         if hasattr(self, "btn_rot_left"):
             self.btn_rot_left.setToolTip(f"{self.t('rot_left')} (L / Ctrl+Shift+R)")
         self.btn_rot_right.setToolTip(f"{self.t('rot_right')} (R / Ctrl+R)")
@@ -1276,6 +1338,13 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
     def _set_chip_name(self, name: str) -> None:
         self._chip_name = name
         self._apply_chip_elision()
+        self._sync_window_title()
+
+    def _sync_window_title(self) -> None:
+        """Görev çubuğu ve Alt+Tab'de hangi dosyanın açık olduğu görünsün (birden çok pencerede ayırt edilir)."""
+        name = getattr(self, "_chip_name", "")
+        title = self.t("title")
+        self.setWindowTitle(f"{name} — {title}" if name else title)
 
     def _apply_chip_elision(self, max_text_width: int = 10_000) -> None:
         """Uzun dosya adını ortadan kısalt (uzantı korunur): 'Squadron 42 - Sta…22.25.jxr'."""
@@ -1303,24 +1372,42 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
 
     def _sync_chrome(self) -> None:
         loaded = bool(self.image_files) and self.current_idx >= 0
+        if self._gallery_on and not loaded and self._folder_ready:
+            self._gallery_on = False  # klasörde gösterilecek bir şey kalmadı
+            self._refresh_gallery_button()
         self.bottom_dock.setVisible(loaded)
-        self.dock_wrap.setVisible(loaded)
+        self.dock_wrap.setVisible(loaded and not self._gallery_on)
+        show_gallery_btn = loaded or self._gallery_on
+        if self.btn_gallery.isVisibleTo(self.nav_bar) != show_gallery_btn:
+            self.btn_gallery.setVisible(show_gallery_btn)
+            if self.isFullScreen():
+                QTimer.singleShot(0, self._layout_overlay_chrome)  # sağ üst kapsülün genişliği değişti
         self.nav_bar.setVisible(True)
         self.brand_bar.setVisible(True)
         self.file_chip.setVisible(loaded and bool(self.lbl_filename.text()))
         if loaded:
-            self._sync_filmstrip()
+            if self._gallery_on:
+                self._sync_gallery()
+            else:
+                self._sync_filmstrip()
         else:
             self._set_chip_name("")
             self.lbl_counter.setText("")
-            self.stage.stack.setCurrentWidget(self.empty)
+            if self._gallery_on:
+                # Klasör taranıyor (galerideyken başka klasör açıldı): ızgara boş bekler, liste gelince dolar.
+                self.gallery.set_files([], -1)
+                self.stage.stack.setCurrentWidget(self.gallery)
+            else:
+                self.stage.stack.setCurrentWidget(self.empty)
             self.filmstrip.clear_strip()
             self.bottom_dock.set_split(False)
             self.details.show_path(None)
             self._refresh_live_overlays()
-        self.details.setVisible(self._details_on and loaded)
+        self.details.setVisible(self._details_on and loaded and not self._gallery_on)
         if self.isFullScreen():
             self._layout_overlay_dock()
+            if self._gallery_on:
+                self._dock_host.hide()
         self.stage.layout_chrome()
 
     def _sync_filmstrip(self) -> None:
@@ -1350,21 +1437,30 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             self._layout_overlay_dock()
 
     def _bind_shortcuts(self) -> None:
-        def bind(key, slot) -> None:
+        def bind(key, slot, gallery: bool = False) -> None:
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
-            # Kırpma kipinde tuşlar (Delete, ok tuşları…) çerçeveyi değil dosyayı etkilemesin.
-            shortcut.activated.connect(lambda: None if self._crop_active else slot())
+            # Kırpma kipinde tuşlar (Delete, ok tuşları…) çerçeveyi değil dosyayı etkilemesin. Galeride yalnızca
+            # seçili dosyaya uygulanabilenler çalışır (sil, geri al, yeniden adlandır, kopyala…); oynatma,
+            # yakınlaştırma, döndürme gibi tek görünüm tuşları görünmeyen tuvali değiştirmesin.
+            shortcut.activated.connect(
+                lambda: None if self._crop_active or (self._gallery_on and not gallery) else slot()
+            )
 
         # Navigasyon / video atlama
         bind(Qt.Key.Key_Left, lambda: self._nav_or_seek(-1, 5000))
         bind(Qt.Key.Key_Right, lambda: self._nav_or_seek(1, 5000))
         bind(QKeySequence("Shift+Left"), lambda: self._skip_video(-15000))
         bind(QKeySequence("Shift+Right"), lambda: self._skip_video(15000))
+        # Her zaman gezinir (oklar video oynarken sarar): A / D ve PageUp / PageDown
         bind(Qt.Key.Key_A, self.prev_image)
         bind(Qt.Key.Key_D, self.next_image)
+        bind(Qt.Key.Key_PageUp, self.prev_image)
+        bind(Qt.Key.Key_PageDown, self.next_image)
         bind(Qt.Key.Key_Home, self.first_image)
         bind(Qt.Key.Key_End, self.last_image)
+        # Galeri: G açar/kapatır (ızgarada Enter / çift tık seçileni açar, Esc kapatır)
+        bind(Qt.Key.Key_G, self.toggle_gallery, gallery=True)
 
         # Oynatma & Canlı Fotoğraf
         bind(Qt.Key.Key_Space, self.toggle_live_playback)
@@ -1383,14 +1479,18 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         bind(Qt.Key.Key_Backspace, self._reset_speed)
         bind(QKeySequence("Ctrl+L"), self._toggle_loop)
         # Ses / altyazı döngüsü (VLC: B / V) ve kare kaydı (mpv: S)
+        # Ses: M sessiz (düğmenin ipucu bunu hep söylüyordu ama kısayol yoktu), ↑ / ↓ ses düzeyi
+        bind(Qt.Key.Key_M, self._mute_key)
+        bind(Qt.Key.Key_Up, lambda: self._volume_key(5))
+        bind(Qt.Key.Key_Down, lambda: self._volume_key(-5))
         bind(Qt.Key.Key_V, self._cycle_subtitle)
         bind(Qt.Key.Key_B, self._cycle_audio)
         bind(Qt.Key.Key_S, self._save_frame)
 
         # Silme & Geri Alma
-        bind(Qt.Key.Key_Delete, self.delete_current)
-        bind(QKeySequence("Shift+Del"), self.permanently_delete_current)
-        bind(QKeySequence.StandardKey.Undo, self.undo_delete)
+        bind(Qt.Key.Key_Delete, self.delete_current, gallery=True)
+        bind(QKeySequence("Shift+Del"), self.permanently_delete_current, gallery=True)
+        bind(QKeySequence.StandardKey.Undo, self.undo_delete, gallery=True)
 
         # Döndürme
         bind(QKeySequence("Ctrl+R"), lambda: self._rotate_current(90))
@@ -1408,7 +1508,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         bind(QKeySequence("-"), lambda: self._zoom_by(1 / 1.2))
 
         # Tam Ekran, Slayt Gösterisi, Ayrıntılar
-        bind(Qt.Key.Key_F11, self.toggle_fullscreen)
+        bind(Qt.Key.Key_F11, self.toggle_fullscreen, gallery=True)
         bind(Qt.Key.Key_F5, self.toggle_slideshow)
         bind(QKeySequence("I"), self.toggle_details)
         bind(QKeySequence("Ctrl+I"), self.toggle_details)
@@ -1416,18 +1516,18 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         bind(QKeySequence("Alt+Enter"), self.toggle_details)
 
         # Dosya İşlemleri
-        bind(Qt.Key.Key_F2, self.rename_current)
+        bind(Qt.Key.Key_F2, self.rename_current, gallery=True)
         bind(QKeySequence("Ctrl+S"), self.save_current_as)
         bind(QKeySequence("Ctrl+P"), self._print_image)
-        bind(QKeySequence("Ctrl+C"), self._copy_file)
+        bind(QKeySequence("Ctrl+C"), self._copy_file, gallery=True)
         bind(QKeySequence("Ctrl+Shift+C"), self._copy_image)
-        bind(QKeySequence("Ctrl+O"), self.select_file)
-        bind(QKeySequence("Ctrl+Shift+O"), self.select_folder)
-        bind(QKeySequence("Ctrl+E"), self._reveal_in_explorer)
-        bind(QKeySequence("Ctrl+,"), self.open_settings_dialog)
-        bind(QKeySequence("Ctrl+Q"), self.quit_application)
-        bind(QKeySequence("Alt+F4"), self.close)
-        bind(Qt.Key.Key_F1, self._show_about)
+        bind(QKeySequence("Ctrl+O"), self.select_file, gallery=True)
+        bind(QKeySequence("Ctrl+Shift+O"), self.select_folder, gallery=True)
+        bind(QKeySequence("Ctrl+E"), self._reveal_in_explorer, gallery=True)
+        bind(QKeySequence("Ctrl+,"), self.open_settings_dialog, gallery=True)
+        bind(QKeySequence("Ctrl+Q"), self.quit_application, gallery=True)
+        bind(QKeySequence("Alt+F4"), self.close, gallery=True)
+        bind(Qt.Key.Key_F1, self._show_about, gallery=True)
 
     def toggle_filmstrip(self) -> None:
         if len(self.image_files) <= 1:
@@ -1440,13 +1540,141 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if not self.isFullScreen():
             self._layout_window_dock()
 
-    def set_chrome_side(self, side: str) -> None:
-        if side not in {"left", "right"}:
+    # --- galeri ---
+    def _ensure_gallery(self):
+        if self.gallery is None:
+            from app.core.paths import get_user_data_dir
+            from app.ui.gallery import GalleryView, ThumbnailProvider
+
+            provider = ThumbnailProvider(self, cache_dir=get_user_data_dir() / "thumbs")
+            self.gallery = GalleryView(provider, int(self.settings.value("gallery_thumb", 176) or 176))
+            self.gallery.open_requested.connect(self._open_from_gallery)
+            self.gallery.close_requested.connect(self.close_gallery)
+            self.gallery.current_changed.connect(self._on_gallery_current)
+            self.gallery.context_requested.connect(self._show_gallery_menu)
+            self.gallery.cell_changed.connect(lambda size: self.settings.setValue("gallery_thumb", int(size)))
+            self.gallery.file_dropped.connect(self.load_path)
+            self.gallery.set_palette(theme_mod.palette(self._resolved_theme(), self.accent))
+            self.gallery.set_live_text(self.t("live_badge"))
+            self.gallery.set_top_inset(52 if self.isFullScreen() else 0)
+            self.stage.stack.addWidget(self.gallery)
+        return self.gallery
+
+    def toggle_gallery(self) -> None:
+        if self._gallery_on:
+            self.close_gallery()
+        else:
+            self.open_gallery()
+
+    def open_gallery(self) -> None:
+        """Geçerli klasörü küçük resim ızgarasında göster; geçerli dosya seçili ve görünür olur."""
+        if self._gallery_on or self.current_file() is None:
             return
-        self.chrome_side = side
-        self.stage.chrome_side = side
-        self.settings.setValue("chrome_side", side)
+        gallery = self._ensure_gallery()
+        self._stop_slideshow()
+        self._cancel_crop()
+        self._end_nav_grace()
+        self._gallery_on = True  # önce: aşağıdaki durdurma tuvale geçmesin, alt bar gizli kalsın
+        self._stop_playback(release=True)
+        self.canvas.stop_gif()
+        self._reset_frame_gate()
+        # Yolda olan görüntü / Live araması sonuçları artık uygulanmasın.
+        self._load_token += 1
+        self._match_token += 1
+        self._hide_seek_preview()
+        self.volume_popup.hide()
+        self._refresh_gallery_button()
+        self._sync_chrome()
+        gallery.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def close_gallery(self) -> None:
+        """Galeriden tek görünüme: seçili dosya açılır (doğrudan açılmış sayılır, gezinme penceresi yok)."""
+        if not self._gallery_on:
+            return
+        self._gallery_on = False
+        had_focus = self.gallery is not None and self.gallery.hasFocus()
+        self._refresh_gallery_button()
+        self._sync_chrome()
+        if self.isFullScreen():
+            self._layout_overlay_chrome()
+            self._show_fullscreen_chrome()
+        else:
+            self._layout_window_dock()
+        self.display_current()
+        if had_focus:
+            self.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _sync_gallery(self) -> None:
+        if not self._gallery_on or self.gallery is None:
+            return
+        self.gallery.set_files(self.image_files, self.current_idx)
+        if self.stage.stack.currentWidget() is not self.gallery:
+            self.stage.stack.setCurrentWidget(self.gallery)
+        self._show_gallery_selection()
+
+    def _show_gallery_selection(self) -> None:
+        """Seçili dosyanın adı üstteki kapsülde ve pencere başlığında (galeride alt bar ve sayaç yok)."""
+        path = self.current_file()
+        if path is None:
+            return
+        chip_tip = f"{path.name}\n{path.parent}\n({self.t('reveal')} - Ctrl+E)"
+        self._set_chip_name(path.name)
+        self.lbl_filename.setToolTip(chip_tip)
+        self.file_chip.setToolTip(chip_tip)
+        self.file_chip.setVisible(True)
+        if self.isFullScreen():
+            self._layout_overlay_chrome()
+            if not self._cursor_blank:
+                self._chip_host.show()
         self.stage.layout_chrome()
+
+    def _on_gallery_current(self, row: int) -> None:
+        if self._gallery_on and 0 <= row < len(self.image_files):
+            self.current_idx = row
+            self._show_gallery_selection()
+
+    def _open_from_gallery(self, row: int) -> None:
+        if 0 <= row < len(self.image_files):
+            self.current_idx = row
+        self.close_gallery()
+
+    def _refresh_gallery_button(self) -> None:
+        if not hasattr(self, "btn_gallery"):
+            return
+        on = self._gallery_on
+        self.btn_gallery.setToolTip(f"{self.t('gallery_close')} (G / Esc)" if on else f"{self.t('gallery')} (G)")
+        self.btn_gallery.setProperty("active", "true" if on else "false")
+        _polish(self.btn_gallery)
+
+    def _show_gallery_menu(self, row: int, global_pos: QPoint) -> None:
+        self._on_gallery_current(row)
+        path = self.current_file()
+        if path is None:
+            return
+        menu = QMenu(self)
+
+        def add(icon, text, slot, shortcut: str | None = None) -> None:
+            act = QAction(icon, text, self)
+            if shortcut:
+                act.setShortcut(QKeySequence(shortcut))
+            act.triggered.connect(slot)
+            menu.addAction(act)
+
+        add(menu_icon("view"), self.t("gallery_open"), lambda: self._open_from_gallery(row), "Enter")
+        add(menu_icon("copy"), self.t("copy_file"), self._copy_file, "Ctrl+C")
+        add(menu_icon("rename"), self.t("rename"), self.rename_current, "F2")
+        if path.is_file():
+            add(menu_icon("move_to"), self.t("move_to"), self._move_to_folder)
+            add(menu_icon("copy_to"), self.t("copy_to"), self._copy_to_folder)
+        add(menu_icon("open_with"), self.t("open_with"), self._open_with)
+        add(menu_icon("folder"), self.t("reveal"), self._reveal_in_explorer, "Ctrl+E")
+        self._add_sort_submenu(menu)
+        menu.addSeparator()
+        add(menu_icon("trash"), self.t("delete"), self.delete_current, "Del")
+        add(menu_icon("trash_forever"), self.t("permanently_delete"), self.permanently_delete_current, "Shift+Del")
+        if self._undo is not None:
+            add(menu_icon("undo"), self.t("undo"), self.undo_delete, "Ctrl+Z")
+        menu.exec(global_pos)
 
     def _refresh_live_overlays(self) -> None:
         live = self.current_match is not None
@@ -1484,7 +1712,11 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             if still is not None:
                 target = still
         self._scan_token += 1
+        self._select_after_scan = None
         if target.is_file():
+            if self._gallery_on:
+                self._gallery_on = False  # dosya açılıyor (sürükle-bırak, Dosya Aç): tek görünümde
+                self._refresh_gallery_button()
             self.image_files = [target]
             self.current_idx = 0
             self._folder_ready = False
@@ -1563,6 +1795,13 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
                 self.current_idx = index_in_folder(self.image_files, shown)
         else:
             self.current_idx = max(0, min(index, len(self.image_files) - 1))
+        pick, self._select_after_scan = self._select_after_scan, None
+        if pick is not None:
+            # Galeride geri alınan dosya: liste yenilenince o seçilsin.
+            for i, path in enumerate(self.image_files):
+                if path.name.lower() == pick:
+                    self.current_idx = i
+                    break
         same = (
             shown is not None
             and self.current_file() is not None
@@ -1573,7 +1812,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.btn_prev.setEnabled(self.current_idx > 0)
         self.btn_next.setEnabled(self.current_idx < len(self.image_files) - 1)
         if not same:
-            self.display_current()
+            # Klasör açıldı (ilk öğe) ya da gösterilen dosya dışarıdan silindi: bu öğeyi kullanıcı seçmedi.
+            self._show_browsed()
         else:
             self._preload_adjacent()
 
@@ -1604,14 +1844,18 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
 
     def _skip_video(self, delta_ms: int) -> bool:
         if self._video_can_seek():
+            self._end_nav_grace()  # bilerek sarıldı: oklar artık sarar
             self.player.skip(delta_ms)
             return True
-        return self._seek_finished_video(delta_ms)
+        if self._seek_finished_video(delta_ms):
+            self._end_nav_grace()
+            return True
+        return False
 
     def _seek_finished_video(self, delta_ms: int) -> bool:
-        """Sonuna kadar oynayan bağımsız videoda son kare ekranda kalır: oklar dosya değiştirmek yerine
-        sarar, oynatıcı oradan duraklatılmış olur (Boşluk devam ettirir). Live Photo bitince fotoğrafa
-        döndüğünden onda oklar yine gezinir."""
+        """Sonuna kadar oynayan bağımsız videoda son kare ekranda kalır: Shift+← / →, kare adımı ya da zaman
+        çubuğu oradan sarar, oynatıcı duraklatılmış olur (Boşluk devam ettirir). Düz oklar ise bitmiş videoda
+        dosya değiştirir (bkz. _nav_or_seek)."""
         if self.current_match is None or self._standalone_video_path() is None:
             return False
         if not self.player.seek_from_end(delta_ms):
@@ -1628,6 +1872,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         """Bir kare ileri/geri. Oynatma sürüyorsa önce duraklatılır (Boşluk ile devam edilir)."""
         if not self._video_can_seek() and not self._seek_finished_video(0):
             return
+        self._end_nav_grace()
         if self.player.step_frame(direction) and self._playing and self.player.is_paused:
             self._playing = False
             self._preview.set_background(False)
@@ -1635,15 +1880,18 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
 
     def _step_speed(self, direction: int) -> None:
         if self._transport_ready():
+            self._end_nav_grace()
             self.player.step_speed(direction)
 
     def _reset_speed(self) -> None:
         if self._transport_ready():
+            self._end_nav_grace()
             self.player.reset_speed()
 
     def _toggle_loop(self) -> None:
         if not self._transport_ready():
             return
+        self._end_nav_grace()
         enabled = not self.player.loop
         self.player.set_loop(enabled)
         self.settings.setValue("loop_video", enabled)
@@ -1657,7 +1905,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             act = QAction(label, menu)
             act.setCheckable(True)
             act.setChecked(abs(value - current) < 1e-6)
-            act.triggered.connect(lambda _checked=False, v=value: self.player.set_speed(v))
+            act.triggered.connect(lambda _checked=False, v=value: (self._end_nav_grace(), self.player.set_speed(v)))
             menu.addAction(act)
 
     def _show_speed_menu(self) -> None:
@@ -1667,12 +1915,51 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         menu.exec(QPoint(top_left.x(), top_left.y() - menu.sizeHint().height() - 4))
 
     def _nav_or_seek(self, direction: int, step_ms: int) -> None:
-        if self._skip_video(direction * step_ms):
+        """← / →: video oynuyorsa (ya da duraklatılmışsa) sarar, yoksa önceki/sonraki dosyaya geçer.
+
+        Gezinmeyi öne alan durumlar:
+        - gezinme penceresi (bkz. _open_nav_grace): gezinerek gelinen video kendiliğinden oynamaya başladıysa
+          ilk NAV_GRACE_MS boyunca oklar gezinir; klasörün ucunda bir şey yapmaz (basılı tutulan tuş son
+          videoyu sona sarmasın);
+        - Live Photo: birkaç saniyelik klipte ±5 sn sarmanın anlamı yok (kare kare: , / .);
+        - sonuna kadar oynamış video (döngü kapalı): izleme bitti, iki ok da dosya değiştirir. Sona doğru
+          sarmak için Shift+← / → ya da zaman çubuğu (basınca video duraklatılmış olur, oklar yine sarar).
+        A / D ve PageUp / PageDown her zaman gezinir; Shift+← / → her zaman sarar.
+        """
+        if self._video_can_seek() and not (self._nav_grace or self._is_live_photo()):
+            self._skip_video(direction * step_ms)
             return
+        self._step_file(direction)
+
+    def _step_file(self, direction: int) -> None:
         if direction < 0:
             self.prev_image()
         else:
             self.next_image()
+
+    def _is_live_photo(self) -> bool:
+        return self.current_match is not None and self.current_match.source != "video"
+
+    # --- gezinme penceresi ---
+    def _show_browsed(self) -> None:
+        """Gezinmenin sonucu olarak geçerli öğeyi göster (doğrudan açılan dosyadan ayırt edilir)."""
+        self._browsing = True
+        self.display_current()
+
+    def _open_nav_grace(self) -> None:
+        """Otomatik oynatma başlatılırken çağrılır: öğeye gezinerek gelindiyse oklar gezinmeyi sürdürür.
+
+        Dosya doğrudan açıldıysa (Dosya Gezgini, Dosya Aç, sürükle-bırak) pencere açılmaz: o dosya izlenmek
+        üzere seçildi, → her oynatıcıdaki gibi ileri sarar."""
+        self._nav_grace = self._nav_grace_wanted
+        self._nav_grace_wanted = False
+
+    def _end_nav_grace(self) -> None:
+        """Pencereyi kapat: süre doldu, yeni öğe gösteriliyor ya da kullanıcı videoyla bilerek ilgilendi
+        (oynat/duraklat, tıklama, zaman çubuğu, sarma, kare, hız, ses…)."""
+        self._nav_grace = False
+        self._nav_grace_wanted = False
+        self._nav_grace_timer.stop()
 
     def _on_play_progress(self, pos: int, dur: int) -> None:
         if self._scrubbing:
@@ -1700,6 +1987,10 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             self.bottom_dock.set_seek_times(pos, dur)
 
     def _on_seek_pressed(self) -> None:
+        self._end_nav_grace()
+        # Bitmiş videoda zaman çubuğuna basmak onu "duraklatılmış" yapar: sürükleme canlı önizler, bırakınca
+        # oraya gidilir ve oklar yeniden sarar (Boşluk oradan sürdürür).
+        self._seek_finished_video(0)
         self._scrubbing = True
 
     def _on_seek_moved(self, value: int) -> None:
@@ -1787,7 +2078,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
     def _on_strip_activated(self, index: int) -> None:
         if 0 <= index < len(self.image_files) and index != self.current_idx:
             self.current_idx = index
-            self.display_current()
+            self._show_browsed()
 
     def select_file(self) -> None:
         curr = self.current_file()
@@ -1829,7 +2120,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             self._rescan_active_folder()
         if self.image_files and self.current_idx > 0:
             self.current_idx -= 1
-            self.display_current()
+            self._show_browsed()
 
     def next_image(self) -> None:
         if self._dir_watch_timer.isActive():
@@ -1837,17 +2128,17 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             self._rescan_active_folder()
         if self.image_files and self.current_idx < len(self.image_files) - 1:
             self.current_idx += 1
-            self.display_current()
+            self._show_browsed()
 
     def first_image(self) -> None:
         if self.image_files and self.current_idx != 0:
             self.current_idx = 0
-            self.display_current()
+            self._show_browsed()
 
     def last_image(self) -> None:
         if self.image_files and self.current_idx != len(self.image_files) - 1:
             self.current_idx = len(self.image_files) - 1
-            self.display_current()
+            self._show_browsed()
 
     def toggle_slideshow(self) -> None:
         if self._slideshow_timer.isActive():
@@ -1859,7 +2150,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if not self.image_files:
             return
         if not self.isFullScreen():
-            self.showFullScreen()
+            self._enter_fullscreen()
         self._slideshow_timer.start(3500)
 
     def _stop_slideshow(self) -> None:
@@ -1870,11 +2161,15 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if not self.image_files:
             self._stop_slideshow()
             return
+        if len(self.image_files) == 1:
+            return  # tek dosya: aynı görüntüyü 3,5 saniyede bir yeniden yükleyip titretme
+        if (self._playing or self._opening_play) and not self.player.loop:
+            return  # video / Live Photo oynuyor: yarıda kesme, bitince sıradaki adımda geç (döngüdeyse bekleme)
         if self.current_idx >= len(self.image_files) - 1:
             self.current_idx = 0
         else:
             self.current_idx += 1
-        self.display_current()
+        self._show_browsed()
 
     def current_file(self) -> Path | None:
         if 0 <= self.current_idx < len(self.image_files):
@@ -1890,7 +2185,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if self._frame_pending:
             self._after_frame(self._preload_adjacent)
             return
-        if not self._folder_ready or not self.image_files:
+        if not self._folder_ready or not self.image_files or self._gallery_on:
             return
         for delta in (1, -1, 2):
             idx = self.current_idx + delta
@@ -1935,6 +2230,15 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             fn()
 
     def display_current(self) -> None:
+        if self._gallery_on and self.current_file() is not None:
+            # Galerideyken (silme, yeniden adlandırma, klasör değişikliği) yalnızca ızgaradaki seçim güncellenir;
+            # dosya, galeriden çıkınca açılır.
+            self._browsing = False
+            self._sync_gallery()
+            return
+        browsed, self._browsing = self._browsing, False
+        self._end_nav_grace()
+        self._nav_grace_wanted = browsed
         self._cancel_crop()
         self._autoplay_armed = True
         self._stop_playback(release=True)
@@ -2157,7 +2461,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             self._preview.release_media(wait=self._preview.path in self.temps.paths())
             self.temps.clear()
             self.current_match = None
-        if self.current_file() is not None:
+        if self.current_file() is not None and not self._gallery_on:
             self.stage.stack.setCurrentWidget(self.canvas)
         is_video = bool(self.current_match is not None and self.current_match.source == "video")
         self.bottom_dock.set_video_mode(is_video)
@@ -2167,6 +2471,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
     def toggle_live_playback(self) -> None:
         if self.current_match is None:
             return
+        if not self._autoplaying:
+            self._end_nav_grace()  # kullanıcı oynattı/duraklattı (Boşluk, tıklama, düğme)
         if self._playing:
             self._autoplay_armed = False
             # mpv komutu başarısızsa UI "duraklatıldı" göstermesin (durum player'da kalır).
@@ -2224,6 +2530,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         startup_trace.mark("video_started")
         self._opening_play = False
         self._playing = True
+        if self._nav_grace:
+            self._nav_grace_timer.start()  # süre, video gerçekten oynamaya başlayınca işler
         self._set_play_loading(False)
         self.bottom_dock.set_video_mode(True)
         if self.stage.stack.currentWidget() is not self.player.widget:
@@ -2255,10 +2563,16 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if self.current_match is None or self._playing or self._opening_play or self.player.is_paused:
             return
         self._autoplay_armed = False  # dosya başına bir kez (ayar adı da "autoplay_once")
-        self.toggle_live_playback()
+        self._open_nav_grace()
+        self._autoplaying = True
+        try:
+            self.toggle_live_playback()
+        finally:
+            self._autoplaying = False
 
     def _set_autoplay(self, enabled: bool) -> None:
         self.settings.setValue("autoplay_once", enabled)
+        self._nav_grace_wanted = False  # ayardan açılınca oynayan video gezinmenin sonucu değil
         if enabled:
             self._autoplay_armed = True
             self._maybe_autoplay()
@@ -2268,6 +2582,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
 
     def _on_playback_failed(self, message: str) -> None:
         startup_trace.mark("video_failed")
+        self._end_nav_grace()
         self._playing = False
         self._opening_play = False
         self._set_play_loading(False)
@@ -2601,38 +2916,6 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         target = sender if isinstance(sender, QWidget) else self.file_chip
         menu.exec(target.mapToGlobal(pos))
 
-    def _on_dock_folder_clicked(self) -> None:
-        path = self.current_file()
-        if path is not None and path.exists():
-            self._reveal_in_explorer()
-        else:
-            self.select_folder()
-
-    def _show_folder_button_menu(self, pos: QPoint) -> None:
-        menu = QMenu(self)
-
-        path = self.current_file()
-        if path is not None:
-            act_reveal = QAction(menu_icon("folder"), self.t("reveal"), self)
-            act_reveal.setShortcut(QKeySequence("Ctrl+E"))
-            act_reveal.triggered.connect(self._reveal_in_explorer)
-            menu.addAction(act_reveal)
-
-        act_folder = QAction(menu_icon("folder"), self.t("open_folder"), self)
-        act_folder.setShortcut(QKeySequence("Ctrl+Shift+O"))
-        act_folder.triggered.connect(self.select_folder)
-        menu.addAction(act_folder)
-
-        act_file = QAction(menu_icon("file"), self.t("open_file"), self)
-        act_file.setShortcut(QKeySequence("Ctrl+O"))
-        act_file.triggered.connect(self.select_file)
-        menu.addAction(act_file)
-
-        menu.addSeparator()
-        self._add_sort_submenu(menu)
-
-        menu.exec(self.btn_folder.mapToGlobal(pos))
-
     def _check_updates(self) -> None:
         from app.ui.updates import get_update_service
 
@@ -2679,16 +2962,6 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         """Menüden yapılan elle denetimin sonucu: pop-up yerine kısa bildirim."""
         if origin == "menu":
             self._flash(text)
-
-    def _on_select_theme(self, mode: str, menu: QMenu | None = None) -> None:
-        if menu is not None:
-            menu.close()
-        self.set_theme(mode)
-
-    def _on_select_language(self, lang: str, menu: QMenu | None = None) -> None:
-        if menu is not None:
-            menu.close()
-        self.set_language(lang)
 
     def set_theme(self, mode: str) -> None:
         try:
@@ -2805,19 +3078,24 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.details.show_path(path, extra)
         self._update_histogram()
 
-    def show_metadata(self) -> None:
-        if not self._details_on:
-            self.toggle_details()
-
     def toggle_maximize(self) -> None:
         super().toggle_maximize()
         self._refresh_max_icon()
 
+    def _enter_fullscreen(self) -> None:
+        # Qt tam ekrana geçerken "ekranı kaplamış" durumunu siler; çıkışta küçük pencereye dönülmesin.
+        self._fs_from_maximized = self.isMaximized()
+        self.showFullScreen()
+
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
-            self.showNormal()
+            if getattr(self, "_fs_from_maximized", False):
+                self.showMaximized()
+            else:
+                self.showNormal()
+            self._fs_from_maximized = False
         else:
-            self.showFullScreen()
+            self._enter_fullscreen()
         # Giriş/çıkış değişiklik olayından da tetiklenir; bu çağrı güvenlik ağıdır (idempotent).
         self._sync_fullscreen_mode()
         self._sync_chrome()
@@ -3011,7 +3289,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             return
         curr_fn = self.current_file() if hasattr(self, "current_file") else None
         loaded = bool(getattr(self, "image_files", [])) or bool(getattr(self, "_playing", False)) or (curr_fn is not None)
-        if hasattr(self, "_dock_host") and loaded:
+        if hasattr(self, "_dock_host") and loaded and not self._gallery_on:
             self._dock_host.show()
             self._dock_host.raise_()
             if hasattr(self, "dock_wrap"):
@@ -3041,14 +3319,6 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         ):
             if host is not None:
                 host.hide()
-
-    def _fade_fullscreen_chrome(self, fade_in: bool) -> None:
-        if not self.isFullScreen():
-            return
-        if fade_in:
-            self._show_fullscreen_chrome()
-        else:
-            self._hide_fullscreen_chrome()
 
     def _layout_overlay_dock(self) -> None:
         if not hasattr(self, "dock_wrap") or not hasattr(self, "bottom_dock"):
@@ -3080,7 +3350,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             return
 
         loaded = self.current_idx >= 0 and bool(self.image_files)
-        if hasattr(self, "dock_wrap") and loaded:
+        if hasattr(self, "dock_wrap") and loaded and not self._gallery_on:
             self.dock_wrap.show()
             self.dock_wrap.raise_()
             if hasattr(self, "bottom_dock"):
@@ -3152,6 +3422,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             elif event.type() == QEvent.Type.Wheel:
                 delta = 5 if event.angleDelta().y() > 0 else -5
                 new_vol = max(0, min(100, self.player.volume + delta))
+                self._end_nav_grace()
                 self.player.set_volume(new_vol)
                 self.volume_popup.set_value(new_vol)
                 self._show_volume_popup()
@@ -3208,6 +3479,24 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
         shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
         alt = bool(modifiers & Qt.KeyboardModifier.AltModifier)
+
+        if self._gallery_on:
+            # Izgara odakta değilken gelen tuşlar: tek görünüm komutları görünmeyen tuvale gitmesin.
+            if key == Qt.Key.Key_Escape:
+                self.close_gallery()
+            elif key == Qt.Key.Key_F11:
+                self.toggle_fullscreen()
+            elif key == Qt.Key.Key_F2:
+                self.rename_current()
+            elif key == Qt.Key.Key_Delete and shift:
+                self.permanently_delete_current()
+            elif key == Qt.Key.Key_Delete:
+                self.delete_current()
+            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not alt:
+                self.close_gallery()
+            else:
+                super().keyPressEvent(event)
+            return
 
         if key == Qt.Key.Key_F11:
             self.toggle_fullscreen()
@@ -3433,7 +3722,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.image_files = remain
         self.current_idx = next_idx
         self._sync_chrome()
-        self.display_current()
+        self._show_browsed()  # silince sıradaki öğe gelir: kullanıcı ayıklıyor, oklarla ilerleyebilmeli
 
     def delete_current(self) -> None:
         path = self.current_file()
@@ -3464,7 +3753,14 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._undo = None
         if not restored:
             return
-        self.load_path(restored[0])
+        first = Path(restored[0])
+        if self._gallery_on and self._watched_folder and same_path_text(str(first.parent), self._watched_folder):
+            # Galeride kalınır: klasör yeniden listelenir ve geri gelen dosya seçilir.
+            self._select_after_scan = first.name.lower()
+            self._dir_watch_timer.stop()
+            self._rescan_active_folder()
+            return
+        self.load_path(first)
 
     def permanently_delete_current(self) -> None:
         path = self.current_file()
@@ -3643,6 +3939,9 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             self.filmstrip.shutdown()
         except Exception:
             pass
+        if self.gallery is not None:
+            self.gallery.shutdown()
+            self.gallery.provider.shutdown()
         self.player.shutdown()
         self._preview.shutdown()  # capture'ı bırak: geçici dosyalar silinebilsin
         self.temps.clear()

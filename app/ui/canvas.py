@@ -15,6 +15,17 @@ from app.ui.drops import FileDropMixin
 from app.ui.svg_overlay import SvgOverlayController, SvgPixmapItem, is_svg_path
 
 
+# Yakınlaştırma sınırı: bir görüntü pikseli en çok bu kadar ekran pikseli olur (küçük görsellerde: sığdırmanın 8 katı).
+MAX_PIXEL_SCALE = 64.0
+WHEEL_STEP = 1.18  # tekerleğin bir çentiği (120 birim)
+
+
+def wheel_zoom_factor(delta_y: int) -> float:
+    """Tekerlek hareketine orantılı yakınlaştırma çarpanı. Hassas dokunmatik yüzeyler çentik yerine küçük
+    parçalar yollar: her parça tam çentik sayılırsa görüntü fırlar. Yatay kaydırma (0) hiçbir şey yapmaz."""
+    return WHEEL_STEP ** (delta_y / 120.0) if delta_y else 1.0
+
+
 class PhotoCanvas(FileDropMixin, QGraphicsView):
     activated = pyqtSignal()  # kısa sol tık (sürükleme değil)
     context_requested = pyqtSignal(QPoint)
@@ -231,12 +242,53 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self.centerOn(bounds.center())
         self.zoom_changed.emit()
 
+    def _fit_scale(self) -> float | None:
+        """Geçerli kipte (sığdır/doldur) görüntüyü pencereye oturtan ölçek; ölçülemiyorsa None."""
+        bounds = self.pixmap_item.sceneBoundingRect()
+        if bounds.width() < 1 or bounds.height() < 1:
+            return None
+        win = self.window()
+        is_fs = win is not None and hasattr(win, "isFullScreen") and win.isFullScreen()
+        pad = 0 if (is_fs or self._fill) else self._padding
+        view = self.viewport().rect().adjusted(pad, pad, -pad, -pad)
+        if view.width() < 2 or view.height() < 2:
+            return None
+        sx = view.width() / bounds.width()
+        sy = view.height() / bounds.height()
+        return max(sx, sy) if self._fill else min(sx, sy)
+
     def zoom_by(self, factor: float) -> None:
-        if self.pixmap_item.pixmap().isNull():
+        """Yakınlaştır/uzaklaştır. Uzaklaştırma, görüntü pencereye oturunca durur (sığdırılmış duruma döner:
+        pencere boyutu değişince yeniden sığar); pencereden küçük görselde %100'de durur. Yakınlaştırmanın
+        da bir tavanı var. Eskiden sınır yoktu: tekerlek görüntüyü bir noktaya kadar küçültebiliyordu."""
+        if self.pixmap_item.pixmap().isNull() or factor <= 0 or factor == 1.0:
             return
+        current = self.displayed_scale()
+        fit = self._fit_scale()
+        if fit is None or current <= 0:
+            self._fitted = False
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.scale(factor, factor)
+            self.zoom_changed.emit()
+            return
+        floor = min(fit, 1.0)
+        ceiling = max(MAX_PIXEL_SCALE, fit * 8.0)
+        target = current * factor
+        if factor < 1.0:
+            if current <= floor * 1.0005:
+                return  # zaten en küçük hâlinde
+            if target <= fit * 1.0005 and current > fit * 1.0005:
+                self.fit_in_window()  # sığdırmanın altına inme: tam oturt
+                return
+            target = max(target, floor)
+        else:
+            if current >= ceiling:
+                return
+            target = min(target, ceiling)
         self._fitted = False
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.scale(factor, factor)
+        step = target / current
+        self.scale(step, step)
         self.zoom_changed.emit()
 
     def reset_view_to_fit(self) -> None:
@@ -261,20 +313,14 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self._fill = fill
         self.fit_in_window()
 
-    def toggle_fill_mode(self) -> None:
-        self.set_fill_mode(not self._fill)
-
     def displayed_scale(self) -> float:
         return float(self.transform().m11())
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         if self.pixmap_item.pixmap().isNull():
             return
-        self._fitted = False
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        factor = 1.18 if event.angleDelta().y() > 0 else 1 / 1.18
-        self.scale(factor, factor)
-        self.zoom_changed.emit()
+        self.zoom_by(wheel_zoom_factor(event.angleDelta().y()))
+        event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

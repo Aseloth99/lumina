@@ -20,6 +20,9 @@ LOCALES = {
         "play": "Oynat",
         "pause": "Duraklat",
         "settings": "Ayarlar",
+        "gallery": "Galeri",
+        "gallery_close": "Galeriyi Kapat",
+        "gallery_open": "Aç",
         "language": "Dil",
         "theme": "Tema",
         "dark": "Koyu",
@@ -69,7 +72,7 @@ LOCALES = {
         "sort_name_asc": "İsme Göre (A'dan Z'ye)",
         "sort_name_desc": "İsme Göre (Z'den A'ya)",
         "play_live": "CANLI Oynat",
-        "autoplay": "Canlı Fotoğrafları Otomatik Oynat",
+        "autoplay": "Canlı Fotoğraf ve Videoları Otomatik Oynat",
         "default_apps": "Varsayılan Uygulamalar",
         "empty_title": "Fotoğraf ya da videoyu buraya bırakın",
         "empty_sub": "Ya da aşağıdaki düğmelerle bir dosya veya klasör açın (Canlı Fotoğraf, HEIC, JPEG, video).",
@@ -301,7 +304,10 @@ LOCALES = {
         "tab_about": "Hakkında",
         "settings_lang_desc": "Uygulama dilini değiştirin.",
         "settings_theme_desc": "Arayüz temasını belirleyin.",
-        "settings_autoplay_desc": "Canlı fotoğrafları açılışta otomatik oynat.",
+        "settings_autoplay_desc": (
+            "Oklarla gezinirken gelen videoda ilk 3 saniye ve video bitince ← / → dosya değiştirir, arada sarar. "
+            "Shift+← / → her zaman sarar, A / D her zaman geçer."
+        ),
         "settings_default_apps_desc": "Lumina'yı varsayılan fotoğraf ve video görüntüleyici yapın.",
         "settings_shell_desc": "Lumina'yı 'Birlikte Aç' listesine ekleyin: görsel ve video dosyalarına sağ tıklayınca Birlikte Aç içinde görünür.",
         "settings_audio_desc": "Video ve Canlı Fotoğraf seslerinin çalınacağı çıkış aygıtını seçin.",
@@ -336,6 +342,9 @@ LOCALES = {
         "play": "Play",
         "pause": "Pause",
         "settings": "Settings",
+        "gallery": "Gallery",
+        "gallery_close": "Close Gallery",
+        "gallery_open": "Open",
         "language": "Language",
         "theme": "Theme",
         "dark": "Dark",
@@ -385,7 +394,7 @@ LOCALES = {
         "sort_name_asc": "Name (A to Z)",
         "sort_name_desc": "Name (Z to A)",
         "play_live": "Play LIVE",
-        "autoplay": "Auto-Play Live Photos",
+        "autoplay": "Auto-Play Live Photos and Videos",
         "default_apps": "Default Apps",
         "empty_title": "Drop a photo or video here",
         "empty_sub": "Or open a file or folder with the buttons below (Live Photo, HEIC, JPEG, video).",
@@ -620,7 +629,10 @@ LOCALES = {
         "tab_about": "About",
         "settings_lang_desc": "Change application language.",
         "settings_theme_desc": "Choose interface theme.",
-        "settings_autoplay_desc": "Automatically play Live Photos when opened.",
+        "settings_autoplay_desc": (
+            "While browsing with the arrows, ← / → change files in the first 3 seconds of a video and after it ends, "
+            "and seek in between. Shift+← / → always seek; A / D always move."
+        ),
         "settings_default_apps_desc": "Make Lumina your default photo and video viewer.",
         "settings_shell_desc": "Add Lumina to the 'Open With' list: it appears under Open With when you right-click an image or video.",
         "settings_audio_desc": "Select audio output device for video & Live Photo playback.",

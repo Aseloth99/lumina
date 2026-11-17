@@ -35,6 +35,8 @@ SVG, HDR screenshots and common video containers. The interface is a frameless w
 - **GPU video playback** through libmpv (Direct3D 11 on Windows) with a seek-bar preview frame, audio and subtitle track selection,
   frame stepping, speed control and "resume where I left off" for long videos.
 - **Folder browsing** with arrow keys, a filmstrip, a slideshow and live updates when files appear in the folder.
+- **Gallery view** (`G`): the whole folder as a grid of thumbnails with video duration and Live badges, resizable tiles and
+  thumbnails made in the background and cached on disk, so folders with thousands of files stay smooth.
 - **Light editing and file operations**: crop, lossless JPEG rotation (EXIF orientation only), rename, save as,
   move or copy to a folder, and delete to the Recycle Bin with undo.
 - **Details panel** with file information, EXIF (camera, lens, location), resolution and a histogram.
@@ -81,6 +83,7 @@ matches a photo so that the pair shares a name. It only renames videos and never
 | Zoom and pan | Mouse wheel, `+` / `-`, drag to pan; double-click for full screen. |
 | Rotate | `R` / `L` or the toolbar button. |
 | Folder navigation | Arrow keys or `A` / `D`, `Home` / `End`, filmstrip, four sort orders (name and date, ascending or descending). |
+| Gallery | `G` or the grid button in the title bar. Follows the current sort order and selects the file you were viewing; arrow keys, `Home` / `End` and `PgUp` / `PgDn` move the selection, `Enter` or double-click opens it, `Esc` or `G` goes back. `Ctrl` + mouse wheel or `+` / `-` change the tile size (remembered). Right-click for file actions; delete, undo, rename and copy work in the grid, and tiles can be dragged out to other apps. |
 | Slideshow | `F5`; `Esc` stops it. |
 | Details panel | `I` or `Alt+Enter`: file info, EXIF, resolution, histogram. |
 | Full screen | `F11` or double-click; the interface hides while idle. |
@@ -94,7 +97,7 @@ matches a photo so that the pair shares a name. It only renames videos and never
 | Seek preview | A thumbnail of the target frame while hovering the seek bar. |
 | Tracks | Audio and subtitle selection (the menu appears only when a file has more than one track); `V` and `B` cycle subtitles and audio. External subtitle files can be opened from the menu. |
 | Frame control | `,` / `.` step one frame; `[` `]` (also `<` `>` and `Ctrl+Up` / `Ctrl+Down`) change speed; `Backspace` resets it; `S` saves the current frame as PNG. |
-| Loop and resume | `Ctrl+L` loops; for videos longer than 3 minutes the last position is remembered (can be turned off in Settings). |
+| Loop and resume | `Ctrl+L` loops; for videos longer than 3 minutes the last position is remembered (can be turned off in Settings). When a video has ended and loop is off, `Left` / `Right` change files instead of seeking. |
 | Audio output | The output device can be chosen in Settings. |
 
 ### Editing and file operations
@@ -165,13 +168,15 @@ py -3.12 -m app [file-or-folder]
 
 | Action | Keys |
 |---|---|
-| Previous / next file | `Left` / `Right`, `A` / `D` (while a video plays, the arrows seek 5 s) |
-| Seek 15 s | `Shift+Left` / `Shift+Right` |
+| Previous / next file | `Left` / `Right`, `A` / `D`, `PgUp` / `PgDn` (while a video plays, the arrows seek 5 s; when you arrive at a video that starts by itself, the arrows keep changing files for its first 3 seconds, and once a video has ended (loop off) they change files again; `A` / `D` and `PgUp` / `PgDn` always change files) |
+| Seek 15 s | `Shift+Left` / `Shift+Right` (always seeks, also in the first 3 seconds and after the end) |
+| Gallery on / off | `G` (`Esc` also leaves); in the gallery `Enter` opens the selected file and `+` / `-` or `Ctrl` + wheel change the tile size |
 | First / last file | `Home` / `End` |
 | Play / pause (video, Live Photo) | `Space` |
 | Frame step | `,` / `.` or `Ctrl+Left` / `Ctrl+Right` |
 | Speed down / up / reset | `[` / `]`, `<` / `>`, `Ctrl+Down` / `Ctrl+Up`; `Backspace` resets |
 | Loop | `Ctrl+L` |
+| Mute / unmute, volume | `M`, `Up` / `Down` |
 | Subtitle / audio track | `V` / `B` |
 | Save current frame | `S` |
 | Zoom in / out | `+` or `=` / `-` |
@@ -197,7 +202,8 @@ py -3.12 -m app [file-or-folder]
 | **About** | Version, "Check for Updates Automatically", "Install Updates Automatically", manual update check, link to the site. |
 
 Settings are stored with `QSettings` (the Windows registry under `HKCU\Software\Lumina`). Video resume positions are kept in
-`%LOCALAPPDATA%\Lumina\resume.json` and a crash log in `%LOCALAPPDATA%\Lumina\logs\crash.log`.
+`%LOCALAPPDATA%\Lumina\resume.json`, gallery thumbnails in `%LOCALAPPDATA%\Lumina\thumbs\` (kept under about 320 MB, oldest
+removed first) and a crash log in `%LOCALAPPDATA%\Lumina\logs\crash.log`.
 
 ## Updates and notices
 
@@ -240,6 +246,7 @@ lumina/
 │   │   ├── main_window.py   main window; media_actions.py mixin for edit / file actions
 │   │   ├── canvas.py        QGraphicsView canvas (fit, fill, zoom, pan)
 │   │   ├── player.py        libmpv embedding with OpenCV fallback
+│   │   ├── gallery.py       thumbnail grid (background thumbnails, memory and disk cache)
 │   │   ├── filmstrip.py, details_panel.py, settings_dialog.py, update_dialog.py, tray.py ...
 │   │   └── message_box.py   custom message boxes used instead of QMessageBox
 │   └── resources/           themes, styles, locale strings (tr / en), icon

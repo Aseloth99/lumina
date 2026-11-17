@@ -72,11 +72,6 @@ def quiet_opencv() -> None:
 _ffmpeg_quieted = False
 
 
-def quiet_ffmpeg() -> None:
-    """Geriye uyum: OpenCV'yi yükler; FFmpeg sessizleştirmesi load_cv2 içinde yapılır."""
-    load_cv2()
-
-
 def _quiet_bundled_ffmpeg(cv2) -> None:
     """cv2 paketindeki FFmpeg kütüphanelerinin log seviyesini kapat (bir kez, ucuz).
 
@@ -192,30 +187,6 @@ def _capture_duration_ms(cv2, cap) -> int:
         return 0
 
 
-def probe_duration_ms(path: str | Path) -> int:
-    """Kare çözmeden süreyi oku (ucuz meta erişim, milisaniye). Daha önce okunduysa dosya açılmaz."""
-    key = str(path)
-    with _poster_lock:
-        known = _duration_cache.get(key)
-    if known is not None:
-        return known
-    cv2 = load_cv2()
-    if cv2 is None:
-        return 0
-    cap, _rot = open_capture(key)
-    if cap is None:
-        return 0
-    try:
-        dur = _capture_duration_ms(cv2, cap)
-    finally:
-        try:
-            cap.release()
-        except Exception:
-            pass
-    _remember_duration(key, dur)
-    return dur
-
-
 # Poster önbelleği: tam çözünürlüklü QImage'lar büyük olduğundan küçük bir LRU. Bayt sınırı da var:
 # 4K bir kare ~25 MB; yalnızca adet sınırı (16) varken 4K videolarla dolu bir klasörde şerit küçük
 # resimleri ~400 MB tam boy kare tutabiliyordu.
@@ -274,6 +245,39 @@ def poster_and_duration(path: str | Path) -> tuple[QImage | None, int]:
     with _poster_lock:
         _store_poster_locked(key, img)
     return img, dur
+
+
+def video_thumb(path: str | Path, max_side: int) -> tuple[QImage | None, int]:
+    """Galeri küçük resmi: ilk kare (yönü düzeltilmiş, en fazla `max_side`) + süre, videoyu bir kez açarak.
+
+    Yazılım çözümü kullanılır: tek kare için donanım çözücüsü kurmak karenin kendisinden pahalı. Tam boy kare
+    poster önbelleğine girmez; yüzlerce videolu bir klasör ana görünümün posterlerini önbellekten atmasın."""
+    cv2 = load_cv2()
+    if cv2 is None:
+        return None, 0
+    key = str(path)
+    try:
+        cap = cv2.VideoCapture(key)
+    except Exception:
+        return None, 0
+    ok, frame, dur, rot = False, None, 0, 0
+    try:
+        if cap.isOpened():
+            auto = getattr(cv2, "CAP_PROP_ORIENTATION_AUTO", None)
+            if auto is not None:
+                cap.set(auto, 0)
+            rot = capture_rotation(cap)
+            dur = _capture_duration_ms(cv2, cap)
+            ok, frame = cap.read()
+    except Exception:
+        ok, frame = False, None
+    finally:
+        cap.release()
+    if dur > 0:
+        _remember_duration(key, dur)
+    if not ok or frame is None:
+        return None, dur
+    return bgr_to_qimage(orient_frame(downscale_bgr(frame, max_side, max_side), rot)), dur
 
 
 def video_poster(path: str | Path) -> QImage | None:

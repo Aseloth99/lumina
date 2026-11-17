@@ -1,9 +1,10 @@
-"""Video bitince ok tuşları dosya değiştirmez, sarar.
+"""Video bitince ok tuşları dosya değiştirir; Shift+ok ve zaman çubuğu sarar.
 
-Bağımsız video sonuna kadar oynayınca son karesi ekranda kalır (mpv keep-open). Eskiden oynatıcı o an ne
-"oynuyor" ne "duraklatılmış" sayıldığından ← / → sonraki/önceki dosyaya geçiyordu. Artık sarıyor; oynatıcı
-o noktadan duraklatılmış olur, Boşluk oradan devam ettirir. Live Photo bitince fotoğrafa döndüğü için onda
-oklar yine gezinir.
+Bağımsız video sonuna kadar oynayınca son karesi ekranda kalır (mpv keep-open). İzleme bitti: ← / → artık
+önceki/sonraki dosyaya geçer (Windows Fotoğraflar ve çoğu görüntüleyici gibi; ← de geçer, çünkü bitmiş
+videoda "5 sn geri" nadiren istenir ve iki okun farklı davranması şaşırtır). Sondan geri sarmak için
+Shift+← / → ya da zaman çubuğu: video oradan duraklatılmış olur, Boşluk devam ettirir, oklar yine sarar.
+Döngü açıkken video hiç "bitmez", oklar sarar. Live Photo bitince fotoğrafa döndüğü için onda oklar gezinir.
 """
 
 from __future__ import annotations
@@ -72,17 +73,65 @@ class ArrowsAfterTheEndTest(_WindowCase):
         w.display_current()
         self.assertIsNotNone(w._standalone_video_path(), "bağımsız video gösteriliyor")
 
-    def test_arrows_seek_a_finished_video_instead_of_changing_file(self) -> None:
+    def _finish(self) -> None:
+        """Oynatıcıyı "sonuna kadar oynadı" durumuna getir (mpv keep-open: son kare ekranda)."""
+        w = self.win
+        w.player._ended = True
+        w.player._playing = False
+        w.player._is_paused = False
+        w._playing = False
+        w._opening_play = False
+
+    def test_arrows_change_file_on_a_finished_video(self) -> None:
         w = self.win
         self._show_video()
-        with mock.patch.object(w.player, "seek_from_end", return_value=True) as seek, \
-             mock.patch.object(w, "next_image") as nxt, mock.patch.object(w, "prev_image") as prv:
+        self._finish()
+        with mock.patch.object(w.player, "seek_from_end", return_value=True) as seek,              mock.patch.object(w, "next_image") as nxt, mock.patch.object(w, "prev_image") as prv:
             w._nav_or_seek(1, 5000)
-            w._nav_or_seek(-1, 5000)
+            w._nav_or_seek(-1, 5000)  # ← de geçer
+        seek.assert_not_called()
+        nxt.assert_called_once()
+        prv.assert_called_once()
+
+    def test_shift_arrows_still_seek_a_finished_video(self) -> None:
+        w = self.win
+        self._show_video()
+        self._finish()
+        with mock.patch.object(w.player, "seek_from_end", return_value=True) as seek,              mock.patch.object(w, "next_image") as nxt, mock.patch.object(w, "prev_image") as prv:
             w._skip_video(-15000)  # Shift+←
-        self.assertEqual([c.args[0] for c in seek.call_args_list], [5000, -5000, -15000])
+        self.assertEqual([c.args[0] for c in seek.call_args_list], [-15000])
         nxt.assert_not_called()
         prv.assert_not_called()
+
+    def test_seek_bar_on_a_finished_video_brings_arrow_seeking_back(self) -> None:
+        w = self.win
+        self._show_video()
+        self._finish()
+        with mock.patch.object(w.player, "_mpv", mock.Mock()),              mock.patch("app.ui.player.mpv_set", return_value=True),              mock.patch.object(w.player, "skip") as skip:
+            w._on_seek_pressed()
+            self.assertFalse(w.player.ended)
+            self.assertTrue(w.player.is_paused, "basınca video oradan duraklatılmış olur")
+            w._scrubbing = False
+            skip.reset_mock()
+            with mock.patch.object(w, "next_image") as nxt:
+                w._nav_or_seek(1, 5000)
+            nxt.assert_not_called()
+            skip.assert_called_once_with(5000)
+
+    def test_looping_video_never_counts_as_finished(self) -> None:
+        w = self.win
+        self._show_video()
+        w.player.loop = True
+        self.addCleanup(setattr, w.player, "loop", False)
+        w.player._playing = True
+        w._playing = True
+        with mock.patch.object(w.player, "_mpv", mock.Mock()), mock.patch.object(w.player, "_entry_id", None):
+            w.player._on_mpv_eof()  # döngüde sona gelmek başa sarar, "bitti" sayılmaz
+        self.assertFalse(w.player.ended)
+        with mock.patch.object(w.player, "skip") as skip, mock.patch.object(w, "next_image") as nxt:
+            w._nav_or_seek(1, 5000)
+        skip.assert_called_once_with(5000)
+        nxt.assert_not_called()
 
     def test_arrows_still_change_file_when_nothing_was_played(self) -> None:
         w = self.win

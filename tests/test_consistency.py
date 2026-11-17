@@ -271,8 +271,8 @@ class WindowTest(_SettingsCase):
         self.assertIn(self.win, closed)
         # kısayol gerçekten quit_application'a bağlı (kapat değil)
         src = (ROOT / "app/ui/main_window.py").read_text(encoding="utf-8")
-        self.assertRegex(src, r'bind\(QKeySequence\("Ctrl\+Q"\), self\.quit_application\)')
-        self.assertRegex(src, r'bind\(QKeySequence\("Alt\+F4"\), self\.close\)')
+        self.assertRegex(src, r'bind\(QKeySequence\("Ctrl\+Q"\), self\.quit_application[,)]')
+        self.assertRegex(src, r'bind\(QKeySequence\("Alt\+F4"\), self\.close[,)]')
 
     def test_errors_use_the_custom_message_box_not_a_native_one(self) -> None:
         seen: list[tuple] = []

@@ -279,9 +279,6 @@ class Filmstrip(QListWidget):
         avail = max(cell, width - 20)
         return max(1, avail // cell)
 
-    def set_files(self, files: list[Path], current: int) -> None:
-        self.set_window(files, current)
-
     def set_window(self, files: list[Path], current: int, radius: int | None = None) -> None:
         if len(files) <= 1:
             self.clear_strip()

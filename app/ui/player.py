@@ -197,22 +197,6 @@ def create_mpv(mpv_mod, opts: dict, **extra):
     raise RuntimeError(f"mpv seçenekleri uygulanamadı: {dropped}")
 
 
-def media_looks_hevc(path: str | Path) -> bool:
-    path = Path(path)
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as fh:
-            if size <= 4 * 1024 * 1024:
-                blob = fh.read()
-            else:
-                blob = fh.read(2 * 1024 * 1024)
-                fh.seek(size - 2 * 1024 * 1024)
-                blob += fh.read()
-    except OSError:
-        return False
-    return b"hvc1" in blob or b"hev1" in blob or b"hvcC" in blob
-
-
 class MpvSurface(FileDropMixin, QWidget):
     """libmpv native pencere yüzeyi — VLC gibi doğrudan D3D11 ile HWND'ye çizim.
 
@@ -277,34 +261,6 @@ class MpvSurface(FileDropMixin, QWidget):
 
     def native_window_id(self) -> int:
         return int(self.winId())
-
-    def push_to_bottom(self) -> None:
-        """Win32 SetWindowPos ile bu native HWND'yi z-order'da en alta it.
-
-        Qt'nin raise_()/lower_() fonksiyonları native HWND'lere etki etmez.
-        Bu metot doğrudan Win32 çağrısı yaparak MpvSurface'ı en alta alır;
-        böylece stage'in diğer Qt child widget'ları (nav_bar, brand_bar) görünür olur.
-        """
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                HWND_BOTTOM = 1  # noqa: N806
-                SWP_NOMOVE = 0x0002  # noqa: N806
-                SWP_NOSIZE = 0x0001  # noqa: N806
-                SWP_NOACTIVATE = 0x0010  # noqa: N806
-                hwnd = int(self.winId())
-                if hwnd:
-                    ctypes.windll.user32.SetWindowPos(
-                        hwnd, HWND_BOTTOM, 0, 0, 0, 0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                    )
-            except Exception:
-                pass
-        else:
-            try:
-                self.lower()
-            except Exception:
-                pass
 
     def set_mpv_instance(self, mpv_instance) -> None:
         self._mpv = mpv_instance
@@ -490,7 +446,9 @@ class MpvSurface(FileDropMixin, QWidget):
         if self._forward_to_overlay(event):
             event.accept()
             return
-        self.zoom_by(1.18 if event.angleDelta().y() > 0 else 1 / 1.18)
+        delta_y = event.angleDelta().y()
+        if delta_y:  # yatay kaydırma yakınlaştırmasın; hassas dokunmatik yüzeyde orantılı
+            self.zoom_by(1.18 ** (delta_y / 120.0))
         event.accept()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -758,7 +716,9 @@ class VideoSurfaceFallback(FileDropMixin, QWidget):
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         if self._pixmap.isNull():
             return
-        self.zoom_by(1.18 if event.angleDelta().y() > 0 else 1 / 1.18)
+        delta_y = event.angleDelta().y()
+        if delta_y:  # yatay kaydırma yakınlaştırmasın; hassas dokunmatik yüzeyde orantılı
+            self.zoom_by(1.18 ** (delta_y / 120.0))
         event.accept()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -1874,16 +1834,6 @@ class LivePlayer(QObject):
         self._playing = False
         self.loading.emit(False)
         self.failed.emit("Video açılamadı.")
-
-
-
-    def _start_fallback(self, gen: int) -> None:
-        # Yalnızca mpv hiç kurulamadıysa (modül yok / desteklenmeyen platform).
-        if gen != self._gen or self._mpv is not None:
-            return
-        thread = self._thread or self._spawn_fallback_thread()
-        thread.configure(self._path, self.loop, gen)
-        thread.start()
 
     @property
     def is_paused(self) -> bool:
