@@ -410,7 +410,7 @@ class LuminaTray(QObject):
         QTimer.singleShot(0, lambda: self._call(win, "open_settings_dialog"))
 
     def _on_update(self) -> None:
-        """Başlıktaki "Güncelle · vX" düğmesiyle aynı güncelleme penceresini açar (doğrudan kurmaz)."""
+        """Başlıktaki ↑ düğmesiyle aynı güncelleme penceresini açar (doğrudan kurmaz)."""
         self.show_window()
         QTimer.singleShot(0, self._open_update)
 
