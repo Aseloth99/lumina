@@ -1,6 +1,6 @@
 [package]
 name = "lumina-launcher"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 description = "Lumina.exe: unpacks the app once per version and starts it (instead of unpacking ~380 MB on every launch)"
 publish = false

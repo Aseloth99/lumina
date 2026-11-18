@@ -146,6 +146,11 @@ class SvgPixmapItem(QGraphicsPixmapItem):
         self._overlay: QImage | None = None
         self._overlay_rect = QRectF()
         self._overlay_density = 0.0
+        # Ekran boyu kopya (canvas.py): büyük görüntü sığdırılmışken piksel ortalamasıyla küçültülmüş hâli boyanır.
+        self._lod: QPixmap | None = None
+        self._lod_scale = 0.0  # kopya pikseli / görüntü pikseli
+        self._lod_dpr = 1.0
+        self.lod_painted = False  # son boyamada kopya mı kullanıldı (testler için)
 
     # -- durum
     def has_overlay(self) -> bool:
@@ -181,11 +186,59 @@ class SvgPixmapItem(QGraphicsPixmapItem):
         tolerance = max(0.03, 1.0 / max(self._overlay.width(), 1))
         return abs(self._overlay_density / max(plan.density, 1e-9) - 1.0) <= tolerance
 
+    # -- ekran boyu kopya
+    def lod_scale(self) -> float:
+        return self._lod_scale if self._lod is not None else 0.0
+
+    def lod_dpr(self) -> float:
+        return self._lod_dpr
+
+    def set_lod(self, pixmap: QPixmap, scale: float, dpr: float) -> None:
+        self._lod = pixmap
+        self._lod_scale = float(scale)
+        self._lod_dpr = float(dpr)
+        self.update()
+
+    def clear_lod(self) -> None:
+        if self._lod is None:
+            return
+        self._lod = None
+        self._lod_scale = 0.0
+        self.update()
+
+    def _paint_lod(self, painter) -> bool:
+        """Görünüm ölçeği kopyanın çözünürlüğünü aşmıyorsa kopyayı boya. Kopya ölçeğinde ve döndürme yokken
+        aygıt pikseline bire bir oturtulur (bilinear yumuşatma olmaz); aksi halde ölçeklenerek boyanır."""
+        lod = self._lod
+        if lod is None:
+            return False
+        t = painter.worldTransform()
+        dpr = painter.device().devicePixelRatioF() if painter.device() is not None else 1.0
+        scale = math.hypot(t.m11(), t.m12()) * dpr
+        if scale <= 0 or scale > self._lod_scale * 1.002:
+            return False  # yakınlaştırıldı: asıl görüntü daha keskin
+        bounds = self.boundingRect()
+        source = QRectF(0.0, 0.0, float(lod.width()), float(lod.height()))
+        axis_aligned = t.m12() == 0 and t.m21() == 0 and t.m11() > 0 and t.m22() > 0
+        if axis_aligned and abs(dpr - self._lod_dpr) < 1e-6 and abs(scale / self._lod_scale - 1.0) < 0.002:
+            r = t.mapRect(bounds)
+            x = round(r.left() * dpr) / dpr
+            y = round(r.top() * dpr) / dpr
+            painter.save()
+            painter.resetTransform()
+            painter.drawPixmap(QRectF(x, y, lod.width() / dpr, lod.height() / dpr), lod, source)
+            painter.restore()
+        else:
+            painter.drawPixmap(bounds, lod, source)
+        return True
+
     # -- boyama
     def paint(self, painter, option, widget=None) -> None:  # noqa: N802
         image = self._overlay
         if image is None:
-            super().paint(painter, option, widget)
+            self.lod_painted = self._paint_lod(painter)
+            if not self.lod_painted:
+                super().paint(painter, option, widget)
             return
         bounds = self.boundingRect()
         exposed = option.exposedRect.intersected(bounds)
