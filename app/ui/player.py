@@ -367,22 +367,80 @@ class MpvSurface(FileDropMixin, QWidget):
             self._set_video_prop("video-unscaled", "no")
         self.zoom_changed.emit()
 
-    def zoom_by(self, factor: float) -> None:
+    def _video_aspect(self) -> float | None:
+        """Ekrandaki (döndürme uygulanmış) video en-boy oranı; bilinmiyorsa None.
+
+        osd-dimensions ekrandaki video dikdörtgenini verir (kenar payları yakınlaştırınca eksiye düşer). Oran
+        yakınlaştırma/kaydırmayla değişmez; hızlı tekerlekte dikdörtgen bir adım geride kalsa da oran doğrudur."""
+        if not self._has_video or self._mpv is None:
+            return None
+        dims = mpv_get(self._mpv, "osd-dimensions")
+        if isinstance(dims, dict):
+            try:
+                w = float(dims.get("w", 0)) - float(dims.get("ml", 0)) - float(dims.get("mr", 0))
+                h = float(dims.get("h", 0)) - float(dims.get("mt", 0)) - float(dims.get("mb", 0))
+            except (TypeError, ValueError):
+                w = h = 0.0
+            if w > 0 and h > 0:
+                return w / h
+        vw, vh = mpv_get(self._mpv, "dwidth", 0), mpv_get(self._mpv, "dheight", 0)
+        try:
+            vw, vh = float(vw), float(vh)
+        except (TypeError, ValueError):
+            return None
+        if vw <= 0 or vh <= 0:
+            return None
+        return vh / vw if self._rotation in (90, 270) else vw / vh
+
+    def _display_size(self, zoom: float) -> tuple[float, float] | None:
+        """Videonun bu yakınlaştırmada ekrandaki boyutu (mantıksal piksel). mpv'de video-pan-x/y bu boyutun
+        kesridir (0.1 = ölçeklenmiş genişliğin onda biri), pencerenin değil."""
+        aspect = self._video_aspect()
+        w, h = float(self.width()), float(self.height())
+        if aspect is None or w < 1 or h < 1:
+            return None
+        fit_w = min(w, h * aspect)
+        return fit_w * zoom, fit_w / aspect * zoom
+
+    def _clamp_pan(self, size: tuple[float, float] | None) -> None:
+        """Yakınlaştırılmış video pencereden taşan kadar kaydırılabilir (kenarda boşluk açılmaz)."""
+        if size is None:
+            return
+        dw, dh = size
+        lim_x = max(0.0, (dw - self.width()) / 2.0) / dw if dw > 0 else 0.0
+        lim_y = max(0.0, (dh - self.height()) / 2.0) / dh if dh > 0 else 0.0
+        self._pan = QPointF(
+            min(lim_x, max(-lim_x, self._pan.x())),
+            min(lim_y, max(-lim_y, self._pan.y())),
+        )
+
+    def zoom_by(self, factor: float, anchor: QPointF | None = None) -> None:
+        """Yakınlaştır. `anchor` (widget koordinatı, tekerlekte imleç) verilirse oradaki nokta yerinde kalır;
+        verilmezse (düğme/klavye) ortaya doğru yakınlaşır."""
         self._cover = False
         import math
 
+        old_zoom = self._zoom
         next_zoom = min(8.0, max(1.0, self._zoom * float(factor)))
         self._zoom = next_zoom
         if self._zoom <= 1.05:
             self._zoom = 1.0
             self._pan = QPointF(0.0, 0.0)
+        else:
+            old_size = self._display_size(old_zoom)
+            if anchor is not None and old_size is not None and old_size[0] > 0 and old_size[1] > 0:
+                # İmleçteki video noktası u = (c - pan*D) / D sabit kalsın: pan' = pan + (c / D) * (1/k - 1)
+                k = self._zoom / old_zoom
+                cx = anchor.x() - self.width() / 2.0
+                cy = anchor.y() - self.height() / 2.0
+                self._pan += QPointF(cx / old_size[0] * (1.0 / k - 1.0), cy / old_size[1] * (1.0 / k - 1.0))
+            self._clamp_pan(self._display_size(self._zoom))
         if self._has_video and self._mpv is not None:
             self._set_video_prop("panscan", 0.0)
             self._set_video_prop("video-unscaled", "no")
             self._set_video_prop("video-zoom", math.log2(self._zoom) if self._zoom > 1.0 else 0.0)
-            if self._zoom <= 1.0:
-                self._set_video_prop("video-pan-x", 0.0)
-                self._set_video_prop("video-pan-y", 0.0)
+            self._set_video_prop("video-pan-x", self._pan.x())
+            self._set_video_prop("video-pan-y", self._pan.y())
         self.zoom_changed.emit()
 
     def set_fill(self, color: QColor) -> None:
@@ -448,7 +506,7 @@ class MpvSurface(FileDropMixin, QWidget):
             return
         delta_y = event.angleDelta().y()
         if delta_y:  # yatay kaydırma yakınlaştırmasın; hassas dokunmatik yüzeyde orantılı
-            self.zoom_by(1.18 ** (delta_y / 120.0))
+            self.zoom_by(1.18 ** (delta_y / 120.0), event.position())
         event.accept()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -475,11 +533,12 @@ class MpvSurface(FileDropMixin, QWidget):
         if self._drag is not None and self.zoomed() and self._mpv is not None:
             delta = event.position() - self._drag
             self._drag = event.position()
-            w = max(1, self.width())
-            h = max(1, self.height())
-            dx = delta.x() / w
-            dy = delta.y() / h
-            self._pan += QPointF(dx, dy)
+            # Pan birimi ölçeklenmiş videonun boyutu: video imleçle aynı hızda kayar (eskiden pencere boyutuna
+            # bölünüyordu, yakınlaştıkça video imleçten hızlı kaçıyordu).
+            size = self._display_size(self._zoom)
+            w, h = size if size is not None else (max(1, self.width()), max(1, self.height()))
+            self._pan += QPointF(delta.x() / w, delta.y() / h)
+            self._clamp_pan(size)
             self._set_video_prop("video-pan-x", self._pan.x())
             self._set_video_prop("video-pan-y", self._pan.y())
             event.accept()
@@ -631,13 +690,51 @@ class VideoSurfaceFallback(FileDropMixin, QWidget):
         self.update()
         self.zoom_changed.emit()
 
-    def zoom_by(self, factor: float) -> None:
+    def _layout(self, zoom: float) -> tuple[QRect, float, float, float] | None:
+        """paintEvent ile aynı yerleşim: (hedef, ölçek, döndürülmüş genişlik, döndürülmüş yükseklik)."""
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        if pw <= 0 or ph <= 0:
+            return None
+        target = self.rect().adjusted(self._padding, self._padding, -self._padding, -self._padding)
+        tw, th = target.width(), target.height()
+        if tw <= 0 or th <= 0:
+            return None
+        eff_pw = ph if self._rotation in (90, 270) else pw
+        eff_ph = pw if self._rotation in (90, 270) else ph
+        if self._cover:
+            scale = max(tw / eff_pw, th / eff_ph)
+        else:
+            scale = min(tw / eff_pw, th / eff_ph)
+            if zoom <= 1.02 and scale > 1.0:
+                scale = 1.0
+        if zoom > 1.02:
+            scale *= zoom
+        return target, scale, eff_pw, eff_ph
+
+    def zoom_by(self, factor: float, anchor: QPointF | None = None) -> None:
+        """Yakınlaştır; `anchor` (tekerlekte imleç) verilirse oradaki nokta yerinde kalır."""
+        old = self._layout(self._zoom)
         self._cover = False
         next_zoom = min(8.0, max(1.0, self._zoom * float(factor)))
         self._zoom = next_zoom
         if self._zoom <= 1.02:
             self._zoom = 1.0
             self._pan = QPointF(0, 0)
+        else:
+            new = self._layout(self._zoom)
+            if new is not None:
+                target, scale, eff_pw, eff_ph = new
+                if anchor is not None and old is not None and old[1] > 0:
+                    # Görüntü merkezi = hedef merkezi + pan; imleçteki nokta sabit: pan' = c - (c - pan) * k
+                    k = scale / old[1]
+                    center = QPointF(target.center())
+                    c = QPointF(anchor) - center
+                    self._pan = c - (c - self._pan) * k
+                lim_x = max(0.0, (eff_pw * scale - target.width()) / 2.0)
+                lim_y = max(0.0, (eff_ph * scale - target.height()) / 2.0)
+                self._pan = QPointF(
+                    min(lim_x, max(-lim_x, self._pan.x())), min(lim_y, max(-lim_y, self._pan.y()))
+                )
         self.update()
         self.zoom_changed.emit()
 
@@ -718,7 +815,7 @@ class VideoSurfaceFallback(FileDropMixin, QWidget):
             return
         delta_y = event.angleDelta().y()
         if delta_y:  # yatay kaydırma yakınlaştırmasın; hassas dokunmatik yüzeyde orantılı
-            self.zoom_by(1.18 ** (delta_y / 120.0))
+            self.zoom_by(1.18 ** (delta_y / 120.0), event.position())
         event.accept()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802

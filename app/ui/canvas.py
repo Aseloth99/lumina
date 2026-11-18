@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QPoint, Qt, QTimer, pyqtSignal
+import math
+
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPainter, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
@@ -11,6 +13,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 
+from app.core.qt_safe import safe_emit
 from app.ui.drops import FileDropMixin
 from app.ui.svg_overlay import SvgOverlayController, SvgPixmapItem, is_svg_path
 
@@ -19,11 +22,45 @@ from app.ui.svg_overlay import SvgOverlayController, SvgPixmapItem, is_svg_path
 MAX_PIXEL_SCALE = 64.0
 WHEEL_STEP = 1.18  # tekerleğin bir çentiği (120 birim)
 
+# Ekran boyu kopya: büyük görüntü sığdırılınca boyama her ekran pikseli için kaynaktan birkaç piksel ÖRNEKLER
+# (aradakileri atlar); ince desenlerde (kumaş, kiremit, ekran görüntüsündeki yazı) hare ve tırtık oluşur.
+# Sığdırma ölçeği bunun altındaysa görüntü arka planda piksel ORTALAMASIYLA ekran boyuna küçültülür ve o boyanır.
+LOD_MAX_SCALE = 0.75
+LOD_SETTLE_MS = 120  # yakınlaştırma/pencere boyutu durulunca hazırla
+LOD_MAX_PIXELS = 40_000_000  # Doldur kipinde kopya ekrandan büyük olabilir; bunu aşarsa hazırlanmaz
+
 
 def wheel_zoom_factor(delta_y: int) -> float:
     """Tekerlek hareketine orantılı yakınlaştırma çarpanı. Hassas dokunmatik yüzeyler çentik yerine küçük
     parçalar yollar: her parça tam çentik sayılırsa görüntü fırlar. Yatay kaydırma (0) hiçbir şey yapmaz."""
     return WHEEL_STEP ** (delta_y / 120.0) if delta_y else 1.0
+
+
+class _LodSignals(QObject):
+    ready = pyqtSignal(object)  # (nesil, QImage, ölçek, dpr)
+
+
+class _LodJob(QRunnable):
+    """Görüntüyü piksel ortalamasıyla (Qt SmoothTransformation küçültmesi) hedef boyuta indirir."""
+
+    def __init__(self, gen: int, image: QImage, size: tuple[int, int], scale: float, dpr: float, signals) -> None:
+        super().__init__()
+        self.gen, self.image, self.size, self.scale, self.dpr = gen, image, size, scale, dpr
+        self.signals = signals
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            out = self.image.scaled(
+                self.size[0],
+                self.size[1],
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        except Exception:  # noqa: BLE001 — kopya yoksa asıl görüntü boyanır
+            out = None
+        self.image = None  # büyük kaynağı hemen bırak
+        safe_emit(self.signals, "ready", (self.gen, out, self.scale, self.dpr))
 
 
 class PhotoCanvas(FileDropMixin, QGraphicsView):
@@ -80,6 +117,73 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self._frame_timer.setSingleShot(True)
         self._frame_timer.setInterval(0)
         self._frame_timer.timeout.connect(self.frame_shown)
+        # Ekran boyu kopya (LOD_*): durulunca tek iş parçacığında hazırlanır, nesil sayacı eski sonucu atar.
+        self._lod_gen = 0
+        self._lod_busy = False
+        self._lod_pending = False
+        self._lod_signals = _LodSignals(self)
+        self._lod_signals.ready.connect(self._on_lod_ready)
+        self._lod_pool = QThreadPool(self)
+        self._lod_pool.setMaxThreadCount(1)
+        self._lod_timer = QTimer(self)
+        self._lod_timer.setSingleShot(True)
+        self._lod_timer.setInterval(LOD_SETTLE_MS)
+        self._lod_timer.timeout.connect(self._update_lod)
+        self.zoom_changed.connect(self._lod_timer.start)
+
+    # -- ekran boyu kopya
+    def _lod_target(self) -> tuple[float, float] | None:
+        """Sığdırılmış hâlde kopyanın ölçeği (aygıt pikseli / görüntü pikseli) ve dpr; gerekmiyorsa None."""
+        item = self.pixmap_item
+        if not self._fitted or self._movie is not None or not isinstance(item, SvgPixmapItem):
+            return None
+        pix = item.pixmap()
+        if pix.isNull():
+            return None
+        t = self.transform()
+        dpr = self.devicePixelRatioF()
+        scale = math.hypot(t.m11(), t.m12()) * dpr
+        if scale <= 0 or scale >= LOD_MAX_SCALE:
+            return None
+        if pix.width() * scale * pix.height() * scale > LOD_MAX_PIXELS:
+            return None
+        return scale, dpr
+
+    def _update_lod(self) -> None:
+        item = self.pixmap_item
+        if not isinstance(item, SvgPixmapItem):
+            return
+        target = self._lod_target()
+        if target is None:
+            if self._fitted:
+                item.clear_lod()  # küçük görüntü / kip değişti; yakınlaştırılmışken eski kopya uzaklaşınca işe yarar
+            return
+        scale, dpr = target
+        if item.lod_scale() > 0 and abs(item.lod_scale() / scale - 1.0) < 0.002 and item.lod_dpr() == dpr:
+            return  # zaten bu ölçekte
+        if self._lod_busy:
+            self._lod_pending = True  # biten iş sonrası yeniden değerlendirilir
+            return
+        pix = item.pixmap()
+        size = (max(1, round(pix.width() * scale)), max(1, round(pix.height() * scale)))
+        self._lod_gen += 1
+        self._lod_busy = True
+        # Raster QPixmap'in toImage()'i veriyi kopyalamaz (paylaşır); işçi yalnızca okur.
+        self._lod_pool.start(_LodJob(self._lod_gen, pix.toImage(), size, scale, dpr, self._lod_signals))
+
+    def _on_lod_ready(self, result) -> None:
+        gen, image, scale, dpr = result
+        self._lod_busy = False
+        pending, self._lod_pending = self._lod_pending, False
+        item = self.pixmap_item
+        if gen == self._lod_gen and image is not None and not image.isNull() and isinstance(item, SvgPixmapItem):
+            item.set_lod(QPixmap.fromImage(image), scale, dpr)
+        if pending:
+            self._lod_timer.start()
+
+    def _reset_lod(self) -> None:
+        """Görüntü değişti: uçuştaki kopya atılır (nesil), bekleyen değerlendirme yeni görüntü için yapılır."""
+        self._lod_gen += 1
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -156,6 +260,7 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self._announce_frame = not pixmap.isNull()
         self._rotation = 0
         self._svg.detach()
+        self._reset_lod()
         self._scene.clear()
         self.pixmap_item = SvgPixmapItem(pixmap)
         self.pixmap_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
@@ -192,6 +297,7 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         if old.isNull() or old.size() != pix.size():
             self._rotation = 0
             self._svg.detach()
+            self._reset_lod()
             self._scene.clear()
             self.pixmap_item = QGraphicsPixmapItem(pix)
             self.pixmap_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
@@ -204,6 +310,7 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
     def clear_image(self) -> None:
         self.stop_gif()
         self._svg.detach()
+        self._reset_lod()
         self._scene.clear()
         self.pixmap_item = SvgPixmapItem()
         self._scene.addItem(self.pixmap_item)
