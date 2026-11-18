@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from PyQt6.QtCore import QEvent, QPoint, QRect, Qt
+from PyQt6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
+from PyQt6.QtGui import QGuiApplication, QRegion
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -58,6 +59,34 @@ _INTERACTIVE_NAMES = {
     "bottomDock",
 }
 
+# Ekran yapılandırması değişince (RDP ile bağlanma, çözünürlük/ölçek değişimi, monitör tak-çıkar) pencere bu kadar
+# sessizlikten sonra yeni ekrana yeniden oturtulur: RDP art arda birkaç olay yayar, sonuncusundan sonra bir kez çalışılır.
+SCREEN_REFIT_MS = 250
+# Hedef geometriyle aradaki bu kadarlık fark (mantıksal px) "zaten oturuyor" sayılır: yuvarlama/çerçeve payı
+# yüzünden pencere hiç durulmayan bir yeniden oturtma döngüsüne girmesin.
+_FIT_TOLERANCE = 2
+# Büyütülmüş çerçevesiz pencere Windows'ta çalışma alanından çerçeve kalınlığı kadar taşar; bu pay normaldir.
+_MAX_TOLERANCE = 24
+
+
+def roughly_fits(geom: QRect, target: QRect, tol: int) -> bool:
+    """`geom` dört kenarıyla da `target`'a en çok `tol` px uzak mı?"""
+    return (
+        abs(geom.left() - target.left()) <= tol
+        and abs(geom.top() - target.top()) <= tol
+        and abs(geom.right() - target.right()) <= tol
+        and abs(geom.bottom() - target.bottom()) <= tol
+    )
+
+
+def clamp_rect(geom: QRect, avail: QRect) -> QRect:
+    """`geom`'u `avail` içine al: sığmıyorsa küçült, taşıyorsa içeri kaydır."""
+    w = min(geom.width(), avail.width())
+    h = min(geom.height(), avail.height())
+    x = min(max(geom.x(), avail.x()), avail.x() + avail.width() - w)
+    y = min(max(geom.y(), avail.y()), avail.y() + avail.height() - h)
+    return QRect(x, y, w, h)
+
 
 def top_level_window_type() -> Qt.WindowType:
     """Ana pencerenin Qt pencere türü.
@@ -97,12 +126,153 @@ class FramelessWindow(QMainWindow):
         self._move_geom = QRect()
         self._is_snapped: str | None = None
         self._normal_geom: QRect | None = None
+        self._screens_hooked = False
+        self._screen_handle = None
+        self._refit_deferred = False  # ekran değişti ama pencere gizli/simge durumundaydı
+        self._restore_check = False  # tam ekran/büyütülmüşken ekran değişti: normale dönünce konumu denetle
+        self._state_cycle_ok = False  # ekran olayı başına durum en çok bir kez yeniden kurulur (döngü olmasın)
+        self._screen_refit_timer = QTimer(self)
+        self._screen_refit_timer.setSingleShot(True)
+        self._screen_refit_timer.setInterval(SCREEN_REFIT_MS)
+        self._screen_refit_timer.timeout.connect(self._refit_to_screen)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         self._apply_os_rounding()
         self._enable_windows_snap()
         self.hook_resize_filters()
+        self._watch_screens()
+        if self._refit_deferred:
+            self._screen_refit_timer.start()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() != QEvent.Type.WindowStateChange or self.isMinimized():
+            return
+        normal = not (self.isFullScreen() or self.isMaximized())
+        if self._refit_deferred or (self._restore_check and normal):
+            self._screen_refit_timer.start()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # Ölçek değişince (WM_DPICHANGED) Windows tam ekran pencereyi eski mantıksal boyutunda bırakır: ekranın bir
+        # köşesine küçülür. Ekran sinyali gelmese de yakala.
+        if self.isFullScreen() and self._screens_hooked:
+            screen = self._fit_screen()
+            if screen is not None and not roughly_fits(self.geometry(), screen.geometry(), _FIT_TOLERANCE):
+                self._screen_refit_timer.start()
+
+    # -- ekran değişimi (RDP, çözünürlük/ölçek, monitör tak-çıkar)
+    def _watch_screens(self) -> None:
+        app = QGuiApplication.instance()
+        if app is None:
+            return
+        if not self._screens_hooked:
+            self._screens_hooked = True
+            app.screenAdded.connect(self._on_screen_added)
+            app.screenRemoved.connect(self.schedule_screen_refit)
+            app.primaryScreenChanged.connect(self.schedule_screen_refit)
+            for screen in app.screens():
+                self._watch_screen(screen)
+        handle = self.windowHandle()
+        if handle is not None and handle is not self._screen_handle:
+            self._screen_handle = handle
+            handle.screenChanged.connect(self.schedule_screen_refit)
+
+    def _watch_screen(self, screen) -> None:
+        screen.geometryChanged.connect(self.schedule_screen_refit)
+        screen.availableGeometryChanged.connect(self.schedule_screen_refit)
+        screen.logicalDotsPerInchChanged.connect(self.schedule_screen_refit)
+
+    def _on_screen_added(self, screen) -> None:
+        self._watch_screen(screen)
+        self.schedule_screen_refit()
+
+    def schedule_screen_refit(self, *_args) -> None:
+        """Ekran değişti: olaylar durulunca (SCREEN_REFIT_MS) pencereyi yeniden oturt (art arda gelenler tek sefer)."""
+        self._state_cycle_ok = True
+        self._screen_refit_timer.start()
+
+    def _fit_screen(self):
+        return (
+            QGuiApplication.screenAt(self.geometry().center())
+            or self.screen()
+            or QGuiApplication.primaryScreen()
+        )
+
+    def _refit_to_screen(self) -> None:
+        """Pencere durumunu (tam ekran / büyütülmüş / normal) bulunduğu ekranın GÜNCEL geometrisine yeniden uygula.
+
+        Qt de Windows da tam ekran pencereyi ekran değişince kendiliğinden yeni boyuta büyütmez: RDP ile bağlanınca
+        arayüz ekranın sol üstünde küçük kalıyor, kalan alanda eski kare asılı duruyor, görev çubuğu görünüyordu.
+        """
+        if not self.isVisible() or self.isMinimized():
+            self._refit_deferred = True  # tepsiden/simge durumundan dönünce uygulanır
+            return
+        self._refit_deferred = False
+        screen = self._fit_screen()
+        if screen is None:
+            return
+        if self.isFullScreen():
+            # İşletim sisteminin sakladığı normal konum eski ekrana göre: çıkışta da denetlensin.
+            self._restore_check = True
+            self._refit_fullscreen(screen.geometry())
+        elif self.isMaximized():
+            self._restore_check = True
+            if not roughly_fits(self.geometry(), screen.availableGeometry(), _MAX_TOLERANCE) and self._state_cycle_ok:
+                self._state_cycle_ok = False
+                self.showNormal()
+                self.showMaximized()
+        else:
+            self._restore_check = False
+            self._keep_on_screen(screen)
+        self._state_cycle_ok = False
+        self._after_screen_refit()
+        self._force_full_repaint()
+
+    def _refit_fullscreen(self, target: QRect) -> None:
+        if roughly_fits(self.geometry(), target, _FIT_TOLERANCE):
+            return
+        # QWidget.setGeometry tam ekran durumunu siler; yerel pencereye ver: durum (ve overlay modu) korunur.
+        handle = self.windowHandle()
+        if handle is not None:
+            handle.setGeometry(target)
+        if not roughly_fits(self.geometry(), target, _FIT_TOLERANCE) and self._state_cycle_ok:
+            # Platform tam ekrandaki pencereye geometri vermedi: tam ekranı bu ekranda yeniden kur.
+            self._state_cycle_ok = False
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowFullScreen)
+            self.showFullScreen()
+
+    def _keep_on_screen(self, screen) -> None:
+        """Normal pencere: ekranlarda tamamen görünüyorsa dokunma (birden çok ekrana yayılmış olabilir),
+        değilse bulunduğu ekranın çalışma alanına al."""
+        geom = self.geometry()
+        visible = QRegion()
+        for each in QGuiApplication.screens():
+            visible = visible.united(QRegion(each.availableGeometry()))
+        if QRegion(geom).subtracted(visible).isEmpty():
+            return
+        target = clamp_rect(geom, screen.availableGeometry())
+        if target != geom:
+            self.setGeometry(target)
+
+    def _after_screen_refit(self) -> None:
+        """Alt sınıflar: eski ekrana/ölçeğe göre hesaplanmış yerleşim ve önbellekleri tazele."""
+
+    def _force_full_repaint(self) -> None:
+        """Pencerenin tamamını, yerel çocuk pencereler (video yüzeyi) dahil yeniden çizdir: eski kare kalmasın."""
+        self.update()
+        if QGuiApplication.platformName() != "windows":
+            return
+        try:
+            import ctypes
+
+            rdw_invalidate, rdw_allchildren, rdw_frame = 0x0001, 0x0080, 0x0400
+            ctypes.windll.user32.RedrawWindow(
+                ctypes.c_void_p(int(self.winId())), None, None, rdw_invalidate | rdw_allchildren | rdw_frame
+            )
+        except Exception:
+            pass
 
     def _apply_os_rounding(self) -> None:
         """Windows 11 yerel DWM yuvarlak köşe desteği (DWMWA_WINDOW_CORNER_PREFERENCE = 33)."""

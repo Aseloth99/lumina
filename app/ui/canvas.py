@@ -313,6 +313,13 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self._fill = fill
         self.fit_in_window()
 
+    def refresh_scale(self) -> None:
+        """Ekran/ölçek değişti: sığdırılmışsa yeniden oturt, SVG bindirmesini yeni ölçekte yeniden planla."""
+        if self._fitted:
+            self.fit_in_window()
+        self._svg.schedule()
+        self.viewport().update()
+
     def displayed_scale(self) -> float:
         return float(self.transform().m11())
 

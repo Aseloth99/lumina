@@ -485,6 +485,33 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         btn.setProperty("active", "true" if is_fs else "false")
         _polish(btn)
 
+    def _after_screen_refit(self) -> None:
+        """Ekran/ölçek değişti (RDP, çözünürlük, monitör; bkz. FramelessWindow._refit_to_screen): eski ekrana göre
+        yerleşmiş ya da ölçeklenmiş her şeyi tazele."""
+        # Küresel konumlu kısa ömürlü parçalar eski ekrana göre yerleşmişti.
+        toast = getattr(self, "_toast", None)
+        if toast is not None:
+            toast.hide()
+        popup = getattr(self, "volume_popup", None)
+        if popup is not None and popup.isVisible():
+            popup.hide()
+        self._relayout_shell()  # tam ekranda overlay kapsülleri, pencerede alt bar yeni boyuta
+        if self.isFullScreen() and not self._cursor_blank:
+            self._show_fullscreen_chrome()
+        if self.gallery is not None:
+            self.gallery.refresh_scale()
+        if hasattr(self, "canvas"):
+            self.canvas.refresh_scale()
+        for host in (
+            getattr(self, "_dock_host", None),
+            getattr(self, "_brand_host", None),
+            getattr(self, "_chip_host", None),
+            getattr(self, "_nav_host", None),
+            getattr(self, "_busy_host", None),
+        ):
+            if host is not None and host.isVisible():
+                host.update()
+
 
     def drag_widgets(self) -> list[QWidget]:
         targets = [self.brand_bar]
