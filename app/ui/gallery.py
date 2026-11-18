@@ -752,6 +752,11 @@ class GalleryView(QListView):
         self._delegate.live_text = text
         self.viewport().update()
 
+    def refresh_scale(self) -> None:
+        """Ekran ölçeği değişti: eski ölçekte hazırlanmış karo piksellerini at, yeniden çiz."""
+        self._delegate.clear_scaled()
+        self.viewport().update()
+
     def set_top_inset(self, px: int) -> None:
         if px != self._top_inset:
             self._top_inset = px
