@@ -370,26 +370,68 @@ def minimize_icon(color: QColor | None = None) -> QIcon:
     return QIcon(pix)
 
 
-def maximize_icon(color: QColor | None = None) -> QIcon:
-    color = color or QColor("#e0e0e0")
-    pix, p = _pixmap()
+def _window_glyph_icon(draw) -> QIcon:
+    """Pencere düğmesi glifi: `draw(painter)` 32×32 ızgarada çizer; 32 ve 64 px (2×) kopyalar (%100/%125/%150 keskin)."""
+    icon = QIcon()
+    for size in (32, 64):
+        pix, p = _pixmap(size)
+        p.scale(size / 32.0, size / 32.0)
+        draw(p)
+        p.end()
+        icon.addPixmap(pix)
+    return icon
+
+
+def paint_maximize_glyph(p: QPainter, color: QColor) -> None:
+    """Büyüt glifi (tek kare), 32×32 ızgarada. Ana pencere ve ChromeDialog aynı çizimi kullanır."""
     p.setPen(_pen(color, 1.85))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawRoundedRect(QRectF(8.5, 8.5, 15, 15), 2.2, 2.2)
-    p.end()
-    return QIcon(pix)
+
+
+def paint_restore_glyph(p: QPainter, color: QColor) -> None:
+    """Geri yükle glifi (üst üste iki kare), 32×32 ızgarada. Arkadaki kare yalnızca öndekinin örtmediği yerde çizilir
+    (öndeki karenin alanı kırpma yolundan çıkarılır): çizgiler öndeki karenin içinden geçmez."""
+    front = QRectF(8, 11.5, 12.5, 12.5)
+    back = QRectF(11.5, 7.5, 12.5, 12.5)
+    front_area = QPainterPath()
+    front_area.addRoundedRect(front, 1.8, 1.8)
+    outside = QPainterPath()
+    outside.addRect(QRectF(-4, -4, 40, 40))
+    p.setPen(_pen(color, 1.7))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.save()
+    p.setClipPath(outside.subtracted(front_area), Qt.ClipOperation.IntersectClip)
+    p.drawRoundedRect(back, 1.8, 1.8)
+    p.restore()
+    p.drawRoundedRect(front, 1.8, 1.8)
+
+
+def paint_update_arrow(p: QPainter, color: QColor) -> None:
+    """Başlıktaki "yeni sürüm" ↑ glifi, 32×32 ızgarada: gövde + ok başı."""
+    p.setPen(_pen(color, 2.1))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawLine(QPointF(16, 24), QPointF(16, 9))
+    head = QPainterPath(QPointF(10.5, 14.5))
+    head.lineTo(QPointF(16, 9))
+    head.lineTo(QPointF(21.5, 14.5))
+    p.drawPath(head)
+
+
+def maximize_icon(color: QColor | None = None) -> QIcon:
+    color = color or QColor("#e0e0e0")
+    return _window_glyph_icon(lambda p: paint_maximize_glyph(p, color))
 
 
 def restore_icon(color: QColor | None = None) -> QIcon:
     color = color or QColor("#e0e0e0")
-    pix, p = _pixmap()
-    p.setPen(_pen(color, 1.7))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawRoundedRect(QRectF(11.5, 7.5, 12.5, 12.5), 1.8, 1.8)
-    p.setBrush(QBrush(Qt.GlobalColor.transparent))
-    p.drawRoundedRect(QRectF(8, 11.5, 12.5, 12.5), 1.8, 1.8)
-    p.end()
-    return QIcon(pix)
+    return _window_glyph_icon(lambda p: paint_restore_glyph(p, color))
+
+
+def update_arrow_icon(color: QColor | None = None) -> QIcon:
+    """Başlıktaki ↑ güncelleme düğmesi; renk vurgudan gelir (yeni bir şey olduğunu belirtir)."""
+    color = color or QColor(_accent())
+    return _window_glyph_icon(lambda p: paint_update_arrow(p, color))
 
 
 def close_glyph_icon(color: QColor | None = None) -> QIcon:

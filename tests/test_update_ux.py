@@ -1,4 +1,4 @@
-"""Güncelleme deneyimi: pop-up yok; başlık kapsülünde "Güncelle · vX" düğmesi; otomatik kur = Lumina kapanırken.
+"""Güncelleme deneyimi: pop-up yok; başlıkta küçük ↑ + Ayarlar'da "↑  Güncelle · vX"; otomatik kur = Lumina kapanırken.
 
 Lumina bir görüntüleyicidir (pencere kapanınca süreç biter), bu yüzden otomatik kurulum "kullanılmıyorken yeniden
 başlat" yerine "kapatırken kur, yeniden başlatma" biçimindedir; kullanıcı hemen yeniden açarsa betik onu öldürmez.
@@ -1271,32 +1271,61 @@ class PillTest(_Base):
         cls.win.deleteLater()
         super().tearDownClass()
 
-    def test_pill_shows_version_follows_language_and_hides(self):
+    def test_no_text_pill_only_the_arrow_icon_with_tooltip_and_name(self):
         win = self.win
         self.assertTrue(win.btn_update.isHidden())
         win.mark_update_available(True, "1.2.3")
         self.assertFalse(win.btn_update.isHidden())
-        self.assertEqual(win.btn_update.text(), "Güncelle · v1.2.3")
+        self.assertEqual(win.btn_update.text(), "", "başlıkta metinli kapsül yok: yalnızca ↑ simgesi")
+        self.assertFalse(win.btn_update.icon().isNull())
+        self.assertNotEqual(win.btn_update.property("role"), "updatePill")
+        self.assertEqual(win.btn_update.toolTip(), "Yeni sürüm v1.2.3 hazır; ayrıntılar ve kurulum için tıklayın")
+        self.assertEqual(win.btn_update.accessibleName(), "Güncelle")
         win.lang = "en"
         win.retranslate_ui()
-        self.assertEqual(win.btn_update.text(), "Update · v1.2.3")
+        self.assertEqual(win.btn_update.text(), "")
+        self.assertEqual(win.btn_update.toolTip(), "Version v1.2.3 is ready; click for details and installation")
+        self.assertEqual(win.btn_update.accessibleName(), "Update")
         win.lang = "tr"
         win.retranslate_ui()
         win.mark_update_available(False)
         self.assertTrue(win.btn_update.isHidden())
 
-    def test_pill_does_not_overlap_the_window_buttons(self):
+    def test_arrow_sits_left_of_minimize_with_the_window_button_size(self):
         win = self.win
         win.mark_update_available(True, "1.2.3")
         wait(150)
-        pill = win.btn_update.geometry()
-        settings = win.btn_settings.geometry()
-        self.assertLessEqual(pill.right(), settings.left())
-        self.assertGreaterEqual(pill.width(), win.btn_update.sizeHint().width(), "düğme sıkışıp metni kırpılmamalı")
+        nav = win.nav_bar.layout()
+        order = [nav.itemAt(i).widget() for i in range(nav.count()) if nav.itemAt(i).widget() is not None]
+        self.assertEqual(
+            order,
+            [win.btn_gallery, win.btn_settings, win.btn_update, win.btn_min, win.btn_max, win.btn_close],
+            "sıra: [galeri][ayarlar][↑][─][▢][✕]",
+        )
+        arrow, minimize = win.btn_update.geometry(), win.btn_min.geometry()
+        self.assertLessEqual(arrow.right(), minimize.left())
+        self.assertLessEqual(minimize.left() - arrow.right(), 4, "↑ küçültmenin hemen solunda")
+        self.assertEqual(win.btn_update.size(), win.btn_min.size(), "pencere düğmeleriyle aynı boy")
+        self.assertEqual(win.btn_update.iconSize(), win.btn_min.iconSize())
+        self.assertEqual(win.btn_update.property("role"), win.btn_min.property("role"), "aynı üzerine gelme/basma görünümü")
         self.assertGreaterEqual(win.nav_bar.width(), win.nav_bar.sizeHint().width(), "kapsül düğmeyi sığdıracak kadar genişlemeli")
         win.mark_update_available(False)
         wait(50)
         self.assertLess(win.nav_bar.width(), 200, "düğme gidince kapsül eski genişliğine dönmeli")
+
+    def test_arrow_is_drawn_in_the_accent_colour(self):
+        from PyQt6.QtGui import QColor
+
+        from app.resources import theme as theme_mod
+        from app.ui.icons import update_arrow_icon
+
+        win = self.win
+        win.mark_update_available(True, "1.2.3")
+        accent = theme_mod.palette(win._resolved_theme(), win.accent)["accent_text"]
+        expected = update_arrow_icon(QColor(accent)).pixmap(32).toImage()
+        self.assertEqual(win.btn_update.icon().pixmap(32).toImage(), expected)
+        self.assertNotEqual(QColor(accent), win._toolbar_ink(), "simge mürekkebi değil vurgu rengi")
+        win.mark_update_available(False)
 
     def test_click_opens_the_details_for_the_pending_update(self):
         win = self.win
@@ -1305,6 +1334,7 @@ class PillTest(_Base):
         with mock.patch("app.ui.updates.get_update_service", return_value=service):
             win.btn_update.click()
         service.open_pending.assert_called_once()
+        service.start_download.assert_not_called()
         win.mark_update_available(False)
 
     def test_new_window_gets_the_button_from_the_service(self):
@@ -1314,7 +1344,8 @@ class PillTest(_Base):
         self.addCleanup(service.deleteLater)
         service._pending = dict(PENDING)
         service.sync_window(self.win)
-        self.assertEqual(self.win.btn_update.text(), "Güncelle · v9.9.9")
+        self.assertFalse(self.win.btn_update.isHidden())
+        self.assertIn("v9.9.9", self.win.btn_update.toolTip())
         self.win.mark_update_available(False)
 
 
@@ -1369,6 +1400,73 @@ class SettingsDialogTest(_Base):
         self.assertTrue(dlg.btn_update.isEnabled())
         self.assertEqual(dlg.btn_update.text(), "Kontrol Et")
         self.assertIn("Güncel · v1.0.0", dlg.lbl_update_status.text())
+
+    def _service_with_offer(self):
+        from app.ui.updates import UpdateService
+
+        service = UpdateService()
+        self.addCleanup(service.deleteLater)
+        service._pending = dict(PENDING)
+        return service
+
+    def test_pending_offer_shows_the_primary_update_button_instead_of_the_status(self):
+        service = self._service_with_offer()
+        with mock.patch("app.ui.settings_dialog.get_update_service", return_value=service):
+            dlg = self._dialog()
+        self.assertFalse(dlg.btn_open_update.isHidden())
+        self.assertTrue(dlg.lbl_update_status.isHidden())
+        self.assertEqual(dlg.btn_open_update.text(), "↑  Güncelle · v9.9.9")
+        self.assertEqual(dlg.btn_open_update.objectName(), "action_btn_primary")
+        self.assertEqual(dlg.btn_update.text(), "Kontrol Et", "denetim düğmesi yerinde kalır")
+        self.win.lang = "en"
+        try:
+            dlg._retranslate_ui()
+            self.assertEqual(dlg.btn_open_update.text(), "↑  Update · v9.9.9")
+        finally:
+            self.win.lang = "tr"
+
+    def test_no_offer_no_button(self):
+        with mock.patch("app.ui.settings_dialog.get_update_service", return_value=None):
+            dlg = self._dialog()
+        self.assertTrue(dlg.btn_open_update.isHidden())
+        self.assertFalse(dlg.lbl_update_status.isHidden())
+
+    def test_offer_arriving_while_settings_is_open_updates_live(self):
+        from app.ui.updates import UpdateService
+
+        service = UpdateService()
+        self.addCleanup(service.deleteLater)
+        with mock.patch("app.ui.settings_dialog.get_update_service", return_value=service):
+            dlg = self._dialog()
+        self.assertTrue(dlg.btn_open_update.isHidden())
+        service._pending = dict(PENDING)
+        service._sync_windows()  # _on_available'ın açık pencerelere bildirdiği yol
+        self.assertFalse(dlg.btn_open_update.isHidden())
+        self.assertEqual(dlg.btn_open_update.text(), "↑  Güncelle · v9.9.9")
+        self.win.mark_update_available(False)
+
+    def test_manual_check_finding_a_version_shows_the_button(self):
+        service = self._service_with_offer()
+        with mock.patch("app.ui.settings_dialog.get_update_service", return_value=service):
+            dlg = self._dialog()
+            dlg.show_pending_update("")
+            dlg._on_manual_update_result("settings", "new", "Yeni sürüm: v9.9.9")
+        self.assertFalse(dlg.btn_open_update.isHidden())
+        self.assertTrue(dlg.btn_update.isEnabled())
+
+    def test_click_closes_settings_and_opens_the_same_update_dialog(self):
+        service = self._service_with_offer()
+        service.open_pending = mock.Mock()
+        with mock.patch("app.ui.settings_dialog.get_update_service", return_value=service):
+            dlg = self._dialog()
+        dlg.show()
+        wait(20)
+        with mock.patch("app.ui.updates.get_update_service", return_value=service):
+            dlg.btn_open_update.click()
+            self.assertFalse(dlg.isVisible(), "Ayarlar kapanır")
+            wait(30)
+        service.open_pending.assert_called_once_with()
+        self.win.mark_update_available(False)
 
     def test_results_for_other_origins_are_ignored(self):
         dlg = self._dialog()

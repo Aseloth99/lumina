@@ -5,7 +5,7 @@
 * Sessiz (varsayılan, "Güncellemeleri otomatik kur"): yeni sürüm bulununca arka planda indirilip doğrulanır, Lumina
   KAPANIRKEN kurulur. Yeniden başlatma yok, pencere/kutu yok. İndirme yarıda kalırsa `last_update_check` damgalanmaz
   (24 saat denetimsiz kalmasın); tamamlanan paket (yol + sürüm + sha) ayarlarda saklanır, sonraki açılışta kullanılır.
-* Elle: başlıktaki "Güncelle · vX" → güncelleme penceresi → "Şimdi güncelle" → indir → kur (iş parçacığında) →
+* Elle: başlıktaki ↑ (ya da Ayarlar'daki "↑  Güncelle · vX", tepsideki "Güncelle · vX") → güncelleme penceresi → "Şimdi güncelle" → indir → kur (iş parçacığında) →
   uygulama TEMİZ çıkar ve yeni sürüm (açık görüntüyle) başlar. Hatalar pencerede satır içi gösterilir.
 """
 

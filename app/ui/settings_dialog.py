@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -398,6 +398,8 @@ class SettingsDialog(ChromeDialog):
             self.lbl_desc.setText(self._t("about_features"))
         if hasattr(self, "btn_update") and not self.update_check.running:
             self.btn_update.setText(self._t("check_btn"))
+        if hasattr(self, "btn_open_update"):
+            self.show_pending_update(self._shown_update_version)
         if hasattr(self, "chk_auto_check"):
             self.chk_auto_check.setText(self._t("auto_update_check"))
             self.chk_auto_check.setToolTip(self._t("auto_update_install_tip"))
@@ -607,6 +609,17 @@ class SettingsDialog(ChromeDialog):
         self.lbl_update_status = QLabel("", self.card_update)
         self.lbl_update_status.setWordWrap(True)
         update_row.addWidget(self.lbl_update_status, 1)
+        # Yeni sürüm bekliyorsa durum satırının yerini "↑  Güncelle · vX" alır (FlexiKey/TransferTCP ile aynı): başlıktaki ↑
+        # ile aynı güncelleme penceresini açar, tıklamak kendiliğinden kurmaz. Ayarlar açıkken teklif gelirse canlı görünür.
+        self._shown_update_version = ""
+        self.btn_open_update = QPushButton(self.card_update)
+        self.btn_open_update.setObjectName("action_btn_primary")
+        self.btn_open_update.setFixedHeight(36)
+        self.btn_open_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_open_update.clicked.connect(self._open_pending_update)
+        self.btn_open_update.hide()
+        update_row.addWidget(self.btn_open_update)
+        update_row.addStretch()
         self.card_update.layout().addLayout(update_row)
         layout.addWidget(self.card_update)
         self.update_check = UpdateCheckAnimator(self.btn_update, self.lbl_update_status, self)
@@ -615,7 +628,7 @@ class SettingsDialog(ChromeDialog):
             service.manual_result.connect(self._on_manual_update_result)
             pending = getattr(service, "_pending", None)
             if pending:  # sessiz denetim zaten yeni sürüm bulmuş
-                self.update_check.finish("new", self._t("update_new_version").format(pending["version"]))
+                self.show_pending_update(str(pending.get("version", "")))
 
         from app.core.remote_notice import SITE_URL
         from app.ui.link_label import LinkLabel
@@ -641,8 +654,38 @@ class SettingsDialog(ChromeDialog):
         service.check_now("settings")
 
     def _on_manual_update_result(self, origin: str, kind: str, text: str) -> None:
-        if origin == "settings":
-            self.update_check.finish(kind, text)
+        if origin != "settings":
+            return
+        if kind == "new":
+            service = get_update_service()
+            version = str((getattr(service, "_pending", None) or {}).get("version", "")) if service is not None else ""
+            if version:  # durum metni yerine "↑  Güncelle · vX" düğmesi
+                self.update_check.cancel()
+                self.show_pending_update(version)
+                return
+        self.update_check.finish(kind, text)
+
+    def show_pending_update(self, version: str) -> None:
+        """Yeni sürüm varsa "↑  Güncelle · vX" düğmesi durum metninin yerini alır; yoksa durum metni geri gelir."""
+        version = str(version or "")
+        self._shown_update_version = version
+        self.btn_open_update.setVisible(bool(version))
+        self.lbl_update_status.setVisible(not version)
+        if version:
+            self.btn_open_update.setText("↑  " + self._t("update_pill").format(version))
+            self.btn_open_update.setToolTip(self._t("update_pill_tip").format(version))
+
+    def mark_update_available(self, available: bool = True, version: str = "") -> None:
+        """Güncelleme hizmeti (`_sync_windows`) açık pencerelere teklifi bildirir: Ayarlar açıkken gelirse düğme canlı belirir."""
+        self.show_pending_update(version if available else "")
+
+    def _open_pending_update(self) -> None:
+        """Ayarlar kapanır ve başlıktaki ↑ ile aynı güncelleme penceresi açılır: Ayarlar kalıcı (modal) olduğundan
+        üstünde açılan güncelleme penceresiyle ikisi birden açık kalmasın (FlexiKey ile aynı akış)."""
+        window = self.main_win
+        self.close()
+        if window is not None:
+            QTimer.singleShot(0, window._open_pending_update)
 
     def _create_card(self, title: str, subtitle: str = "") -> QFrame:
         card = QFrame(self.body_host)

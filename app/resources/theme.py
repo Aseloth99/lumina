@@ -130,7 +130,7 @@ def palette(theme: str, accent: str | None = None) -> dict:
     p["accent"] = spec["accent"]
     p["accent2"] = spec["accent2"]
     p["accent_hi"] = spec["hi_dark"] if dark else spec["hi_light"]
-    fill = spec["accent2"]  # dolu yüzey (seçili öğe, birincil düğme, güncelleme kapsülü)
+    fill = spec["accent2"]  # dolu yüzey (seçili öğe, birincil düğme)
     ink = best_ink(fill)
     p["fill"] = fill
     p["on_fill"] = ink
@@ -348,7 +348,7 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
             border: none;
             border-radius: 6px;
             padding: 0px;
-            min-width: 28px;
+            min-width: 30px;  /* = setFixedSize genişliği: kapsül daralınca düğmeler (↑ dahil) 28-29 px'e ezilmesin */
             min-height: 24px;
         }}
         QPushButton[role="sys"]:hover {{
@@ -359,19 +359,6 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
         }}
         QPushButton[role="sys"][active="true"]:hover {{
             background-color: {active_hover_bg};
-        }}
-        QPushButton[role="updatePill"] {{
-            background-color: {p['fill']};
-            color: {p['on_fill']};
-            border: 1px solid {p['accent_edge']};
-            border-radius: 12px;
-            padding: 0px 12px;
-            margin: 0px 6px 0px 2px;
-            font-size: 11px;
-            font-weight: 700;
-        }}
-        QPushButton[role="updatePill"]:hover {{
-            background-color: {p['fill_hover']};
         }}
         QPushButton#closeBtn {{
             font-size: 11px;

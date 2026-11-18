@@ -12,21 +12,23 @@ başlık + ✕). Çerçeve çizimi, başlık çubuğu ve palet `message_box` mod
 
 Boyutlar, işletim sistemi çerçevesindeki gibi "içerik boyutu" olarak verilir: `resize/setMinimumSize/setMinimumWidth`
 çevresindeki 8 px'lik gölge payını kendisi ekler. `resizable=True` pencerelerde (Lumina'da kullanılmıyor) başlıkta büyüt/geri al düğmesi
-olur ve kenarlardan (gölge payından) sistem yeniden boyutlandırması başlatılır. Tema/vurgu pencere açıkken değişirse
+(ana pencereyle aynı vektör glifler, duruma göre ipucu) olur ve kenarlardan (gölge payından) sistem yeniden boyutlandırması başlatılır. Tema/vurgu pencere açıkken değişirse
 (Ayarlar canlı önizleme) çerçeve renkleri anında güncellenir.
 """
 
 from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QPoint, QRectF, QSize, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QAbstractButton, QApplication, QDialog, QFrame, QScrollArea, QVBoxLayout, QWidget
 
+from .icons import paint_maximize_glyph, paint_restore_glyph
 from .message_box import (  # noqa: PLC2701 (ortak modülün çerçeve parçaları; aynı projede, testle korunur)
     _SHADOW,
     _TITLE_H,
     _ChromeDialog,
     _TitleBar,
+    _lang,
     _plain,
     button_text,
     current_palette,
@@ -45,8 +47,16 @@ def _dialog_qss(p: dict) -> str:
     """
 
 
+_MAX_TIPS = {
+    "tr": {False: "Ekranı Kapla", True: "Geri Yükle"},
+    "en": {False: "Maximize", True: "Restore Down"},
+}
+
+
 class _MaxButton(QAbstractButton):
-    """Başlıkta büyüt/geri al düğmesi: ana pencerenin başlığıyla aynı glif çifti (□ / ❐)."""
+    """Başlıkta büyüt/geri al düğmesi: ana pencerenin başlığıyla aynı vektör glif çifti (tek kare / üst üste iki kare)."""
+
+    GLYPH = 20.0  # 32'lik ızgaranın çizildiği kare (px): ✕ (9 px) ile aynı görsel ağırlık
 
     def __init__(self, pal: dict, parent: QWidget | None = None):
         super().__init__(parent)
@@ -56,24 +66,33 @@ class _MaxButton(QAbstractButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         _plain(self, "mb_max")
+        self._sync_tip()
 
     def set_maximized(self, maximized: bool) -> None:
         self._maximized = bool(maximized)
+        self._sync_tip()
         self.update()
+
+    def _sync_tip(self) -> None:
+        tip = _MAX_TIPS.get(_lang(), _MAX_TIPS["en"])[self._maximized]
+        self.setToolTip(tip)
+        self.setAccessibleName(tip)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.underMouse() or self.isDown():
             path = QPainterPath()
             path.addRoundedRect(QRectF(self.rect()), 6, 6)
             painter.fillPath(path, QColor(self._pal["surface"] if not self.isDown() else self._pal["sunken"]))
-        painter.setPen(QColor(self._pal["text"]))
-        font = QFont("Segoe UI")
-        font.setPointSize(13)
-        font.setWeight(QFont.Weight.Light)
-        painter.setFont(font)
-        painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), "❐" if self._maximized else "□")
+        size = self.GLYPH
+        painter.translate((self.width() - size) / 2, (self.height() - size) / 2)
+        painter.scale(size / 32.0, size / 32.0)
+        ink = QColor(self._pal["text"])
+        if self._maximized:
+            paint_restore_glyph(painter, ink)
+        else:
+            paint_maximize_glyph(painter, ink)
 
     def enterEvent(self, event) -> None:
         self.update()

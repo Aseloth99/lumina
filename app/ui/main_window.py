@@ -139,6 +139,7 @@ from app.ui.icons import (
     theme_light_icon,
     theme_system_icon,
     trash_icon,
+    update_arrow_icon,
     volume_icon,
     zoom_icon,
 )
@@ -445,6 +446,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             # Pencere durumu dışarıdan değiştirilirse (showFullScreen/showNormal
             # doğrudan çağrısı) btn_full butonunu gerçek durumla senkronize et.
             self._sync_fullscreen_button()
+            # Büyüt/geri yükle glifi de her durum değişiminde (Win+Yukarı/Aşağı, Aero Snap, görev çubuğu, çift tık…)
+            self._refresh_max_icon()
         if hasattr(self, "stage"):
             self.stage.layout_chrome()
             QTimer.singleShot(0, self.stage.layout_chrome)
@@ -623,16 +626,6 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         )
         brand_layout.addWidget(self.lbl_brand)
 
-        # Güncelleme düğmesi: sessiz denetim yeni sürüm bulursa görünür (pop-up yok)
-        self.btn_update = QPushButton()
-        self.btn_update.setProperty("role", "updatePill")
-        self.btn_update.setFixedHeight(24)
-        self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_update.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_update.clicked.connect(self._open_pending_update)
-        self.btn_update.setVisible(False)
-        nav.addWidget(self.btn_update)
-
         self.btn_gallery = self._sys_button()
         self.btn_gallery.clicked.connect(self.toggle_gallery)
         self.btn_gallery.hide()
@@ -641,6 +634,13 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.btn_settings = self._sys_button()
         self.btn_settings.clicked.connect(self.show_settings_menu)
         nav.addWidget(self.btn_settings)
+
+        # Güncelleme: küçültmenin hemen solunda vurgu renkli ↑ (yalnızca simge, pencere düğmeleriyle aynı boy). Sessiz
+        # denetim yeni sürüm bulursa görünür (pop-up yok); tıklamak ayrıntı penceresini açar, kendiliğinden kurmaz.
+        self.btn_update = self._sys_button()
+        self.btn_update.clicked.connect(self._open_pending_update)
+        self.btn_update.setVisible(False)
+        nav.addWidget(self.btn_update)
 
         self.btn_min = self._sys_button()
         self.btn_min.clicked.connect(self.showMinimized)
@@ -1012,16 +1012,21 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.btn_gallery.setIcon(gallery_icon(ink))
         self.btn_min.setIcon(minimize_icon(ink))
         self._refresh_max_icon()
+        self._apply_update_button()
         self.details.set_close_icon(ink)
         self._refresh_live_icon()
         self._refresh_transport_controls()
 
     def _refresh_max_icon(self) -> None:
+        """Büyüt/geri yükle glifi ve ipucu pencerenin GERÇEK durumundan: her WindowStateChange'te (düğme, başlıkta çift tık,
+        Win+Yukarı/Aşağı, Aero Snap, görev çubuğu, doğrudan showMaximized) ve tema/dil değişiminde çağrılır."""
+        btn = getattr(self, "btn_max", None)
+        if btn is None:
+            return
         ink = self._toolbar_ink()
-        if self.isMaximized():
-            self.btn_max.setIcon(restore_icon(ink))
-        else:
-            self.btn_max.setIcon(maximize_icon(ink))
+        maximized = self.isMaximized()
+        btn.setIcon(restore_icon(ink) if maximized else maximize_icon(ink))
+        btn.setToolTip(self.t("window_restore" if maximized else "window_maximize"))
 
     def _refresh_strip_icon(self) -> None:
         if not hasattr(self, "btn_strip"):
@@ -1275,7 +1280,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
     def retranslate_ui(self) -> None:
         install_qt_translations(self.lang)
         self._sync_window_title()
-        self._apply_update_pill()
+        self._apply_update_button()
         if hasattr(self, "lbl_brand"):
             self._fit_brand_text(self.stage.width() or 10_000)
             if hasattr(self, "brand_bar"):
@@ -2951,29 +2956,31 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             service.check_now()
 
     def mark_update_available(self, available: bool = True, version: str = "") -> None:
-        """Bekleyen güncellemeyi menüde rozetle ve başlık kapsülündeki "Güncelle · vX" düğmesini göster."""
+        """Bekleyen güncellemeyi menüde rozetle ve başlık kapsülündeki ↑ düğmesini göster (Ayarlar açıksa onun
+        "↑  Güncelle · vX" düğmesini hizmetin `_sync_windows`'u ayrıca günceller)."""
         self._update_badge = bool(available)
         if available and version:
             self._update_version = str(version)
         elif not available:
             self._update_version = ""
-        self._apply_update_pill()
+        self._apply_update_button()
 
-    def _apply_update_pill(self) -> None:
-        if not hasattr(self, "btn_update"):
+    def _apply_update_button(self) -> None:
+        """Başlıktaki ↑: yalnızca simge (metin yok), vurgu renginde; ipucu ve erişilebilir ad sürümü/dili izler."""
+        btn = getattr(self, "btn_update", None)
+        if btn is None:
             return
         version = self._update_version
-        self.btn_update.setVisible(bool(version))
-        if version:
-            self.btn_update.setText(self.t("update_pill").format(version))
-            self.btn_update.setToolTip(self.t("update_pill_tip").format(version))
-            self.btn_update.adjustSize()
-        self.btn_update.style().unpolish(self.btn_update)
-        self.btn_update.style().polish(self.btn_update)
-        QTimer.singleShot(0, self._relayout_chrome)
+        btn.setText("")
+        btn.setIcon(update_arrow_icon(QColor(theme_mod.palette(self._resolved_theme(), self.accent)["accent_text"])))
+        btn.setToolTip(self.t("update_pill_tip").format(version) if version else "")
+        btn.setAccessibleName(self.t("update_button_name"))
+        if btn.isHidden() == bool(version):  # görünürlük değişiyor: kapsül genişliği de değişir
+            btn.setVisible(bool(version))
+            QTimer.singleShot(0, self._relayout_chrome)
 
     def _relayout_chrome(self) -> None:
-        """Başlık kapsülü genişliği değişti (güncelleme düğmesi göründü/gitti): kapsülleri yeniden yerleştir."""
+        """Başlık kapsülü genişliği değişti (↑ güncelleme düğmesi göründü/gitti): kapsülleri yeniden yerleştir."""
         stage = getattr(self, "stage", None)
         if stage is not None:
             stage.layout_chrome()
