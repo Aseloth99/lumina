@@ -175,6 +175,58 @@ def active_palette() -> dict:
     return palette(active_theme(), active_accent())
 
 
+def combo_arrow_path(color: str) -> str:
+    """Açılır kutu (QComboBox) için ince aşağı ok görseli; stil sayfası `image: url(...)` ile kullanır.
+
+    Stil sayfası kutuya kenarlık/zemin verince Windows stili aşağı ok düğmesini eski kabartmalı kutu olarak çizer
+    (koyu temada siyah üstüne siyah ok). Ok tema rengiyle bir kez üretilir ve geçici klasörde saklanır.
+    """
+    import os
+    import tempfile
+
+    name = "lumina_chev_" + color.lstrip("#").lower() + ".png"
+    path = os.path.join(tempfile.gettempdir(), name)
+    if not os.path.isfile(path):
+        from PyQt6.QtCore import QPointF, Qt
+        from PyQt6.QtGui import QColor, QImage, QPainter, QPen
+
+        img = QImage(32, 32, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(color), 3.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPolyline([QPointF(8, 12.5), QPointF(16, 20.5), QPointF(24, 12.5)])
+        painter.end()
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            if img.save(tmp, "PNG"):
+                os.replace(tmp, path)
+        except OSError:
+            pass
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    return path.replace("\\", "/")
+
+
+def combo_arrow_qss(selector: str, color: str) -> str:
+    """`selector` açılır kutusunun ok bölümü: düz, kenarlıksız, tema renginde ince ok."""
+    return f"""
+        {selector}::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: center right;
+            width: 26px; border: none; background: transparent;
+        }}
+        {selector}::down-arrow {{ image: url("{combo_arrow_path(color)}"); width: 12px; height: 12px; }}
+        {selector}::down-arrow:on {{ top: 1px; }}
+    """
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # Ana pencere stil sayfası
 # ---------------------------------------------------------------------------------------------------------------
@@ -411,6 +463,7 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
         QLabel#counter {{ font-weight: 700; color: {p['text_muted']}; min-width: 48px; font-size: 12px; }}
         QLabel#emptyTitle {{ font-size: 22px; font-weight: 700; color: {p['text']}; }}
         QLabel#emptySub {{ font-size: 13px; color: {p['text_muted']}; }}
+        QLabel#osdText {{ font-size: 15px; font-weight: 700; color: {p['text']}; background: transparent; }}
         QMenu {{
             background-color: {menu_bg};
             border: 1px solid {menu_border};
@@ -623,6 +676,7 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
             font-weight: 500;
         }}
         QComboBox#card_control:hover {{ border-color: {p['accent_edge']}; }}
+        {combo_arrow_qss("QComboBox#card_control", p['text_muted'])}
         QComboBox#card_control QAbstractItemView {{
             background-color: {p['raised']};
             color: {p['text']};

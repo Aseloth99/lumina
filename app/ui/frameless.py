@@ -126,6 +126,10 @@ class FramelessWindow(QMainWindow):
         self._move_geom = QRect()
         self._is_snapped: str | None = None
         self._normal_geom: QRect | None = None
+        # Pencere bir ÇİFT TIKLA büyütüldü ve o günden beri büyütülmüş duruyor: sonraki çift tık (nereye denk gelirse gelsin,
+        # fotoğraf/video dahil) bunu geri alır. Başka her durum değişimi (büyüt düğmesi, Win+Yukarı, yaslama, tam ekran,
+        # geri yükleme…) bu hafızayı siler; bkz. changeEvent, double_click_maximize.
+        self._max_by_dblclick = False
         self._screens_hooked = False
         self._screen_handle = None
         self._refit_deferred = False  # ekran değişti ama pencere gizli/simge durumundaydı
@@ -147,6 +151,8 @@ class FramelessWindow(QMainWindow):
 
     def changeEvent(self, event) -> None:  # noqa: N802
         super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and not self._maximized_only():
+            self._max_by_dblclick = False
         if event.type() != QEvent.Type.WindowStateChange or self.isMinimized():
             return
         normal = not (self.isFullScreen() or self.isMaximized())
@@ -415,9 +421,12 @@ class FramelessWindow(QMainWindow):
                 if self._is_media_surface(obj):
                     # Fotoğraf/video üzerinde çift tık TAM EKRAN'dır: yüzey kendi `double_clicked`'ını yayınlar. Burada "başlık
                     # çubuğu çift tıkı" sayılıp pencere büyütülürse olay yutulur, ilk tıkın (anında) duraklatması da geri alınmazdı.
+                    # (Çift tıkla büyütülmüş pencerede yüzeyin işleyicisi tam ekran yerine geri yükler: undo_double_click_maximize.)
                     return super().eventFilter(obj, event)
+                if self.undo_double_click_maximize():
+                    return True
                 if self._is_top_drag_strip(local) or self._in_drag_region(global_pos):
-                    self.toggle_maximize()
+                    self.double_click_maximize()
                     return True
         return super().eventFilter(obj, event)
 
@@ -632,10 +641,12 @@ class FramelessWindow(QMainWindow):
             return
         local = event.position().toPoint()
         global_pos = event.globalPosition().toPoint()
+        if event.button() == Qt.MouseButton.LeftButton and self.undo_double_click_maximize():
+            return
         if event.button() == Qt.MouseButton.LeftButton and (
             self._is_top_drag_strip(local) or self._in_drag_region(global_pos)
         ):
-            self.toggle_maximize()
+            self.double_click_maximize()
             return
         super().mouseDoubleClickEvent(event)
 
@@ -669,6 +680,25 @@ class FramelessWindow(QMainWindow):
             return
         self._pending_move = None
         super().mouseReleaseEvent(event)
+
+    def _maximized_only(self) -> bool:
+        return self.isMaximized() and not self.isFullScreen() and not self.isMinimized()
+
+    def double_click_maximize(self) -> None:
+        """Başlık alanında (üst şerit, gezinti/dosya kapsülü…) çift tık: büyüt/geri yükle ve çift tıkla büyütüldüyse hatırla.
+
+        Hata (yeniden üretildi): normal pencerede üst şeride çift tık pencereyi büyütüyordu; büyüyünce aynı ekran noktası
+        fotoğrafın üstüne denk geldiğinden ikinci çift tık geri almak yerine TAM EKRAN yapıyordu."""
+        self.toggle_maximize()
+        self._max_by_dblclick = self._maximized_only()
+
+    def undo_double_click_maximize(self) -> bool:
+        """Pencere çift tıkla büyütülmüş ve hâlâ öyleyse geri yükle (True). Değilse hiçbir şey yapma (False)."""
+        if not (self._max_by_dblclick and self._maximized_only()):
+            self._max_by_dblclick = False
+            return False
+        self.double_click_maximize()
+        return True
 
     def toggle_maximize(self) -> None:
         from PyQt6.QtWidgets import QApplication

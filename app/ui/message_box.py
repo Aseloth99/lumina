@@ -347,6 +347,8 @@ def current_palette() -> dict:
 
 
 def _qss(p: dict) -> str:
+    from app.resources.theme import combo_arrow_qss  # açılır kutunun oku temaya uysun (Windows'un kabartmalı düğmesi değil)
+
     return f"""
         QDialog#mb_root {{ background: transparent; border: none; }}
         QWidget[mb="1"] {{ background: transparent; border: none; color: {p['text']}; }}
@@ -379,6 +381,7 @@ def _qss(p: dict) -> str:
             selection-background-color: {p['accent']}; selection-color: {p['on_accent_hi']};
         }}
         QComboBox#mb_input:focus, QComboBox#mb_input:on {{ border: 1px solid {p['accent']}; }}
+        {combo_arrow_qss("QComboBox#mb_input", p['text_muted'])}
         QComboBox#mb_input QAbstractItemView {{
             background-color: {p['raised']}; color: {p['text']}; border: 1px solid {p['edge']}; outline: none;
             selection-background-color: {p['accent']}; selection-color: {p['on_accent_hi']};

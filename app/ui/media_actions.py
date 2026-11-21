@@ -27,6 +27,7 @@ from app.core.win_shell import reveal_in_explorer
 from app.resources.locales import translate_error
 from app.ui.chrome_widgets import Toast
 from app.ui.crop_overlay import CropOverlay
+from app.ui.hover_fix import settle_hover
 from app.ui.live_button import _fmt_ms
 from app.ui.message_box import MessageBox
 
@@ -115,6 +116,7 @@ class MediaActionsMixin:
         menu.addAction(self.t("subtitle_open"), self._open_subtitle_file)
         top_left = self.btn_tracks.mapToGlobal(QPoint(0, 0))
         menu.exec(QPoint(top_left.x(), top_left.y() - menu.sizeHint().height() - 4))
+        settle_hover(self.btn_tracks)
 
     def _open_subtitle_file(self) -> None:
         path = self.current_file()

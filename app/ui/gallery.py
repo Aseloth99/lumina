@@ -12,6 +12,7 @@ import hashlib
 import io
 import os
 import threading
+import time
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
@@ -43,6 +44,7 @@ from app.core.matcher import VIDEO_EXTS
 from app.core.qt_safe import safe_emit
 from app.core.thumb_loader import load_thumb_pil
 from app.core.video_io import video_thumb
+from app.ui.fade import animations_enabled
 from app.ui.filmstrip import _BadgeWorker
 from app.ui.live_button import _fmt_ms
 
@@ -55,6 +57,7 @@ DISK_VERSION = 1  # küçük resim biçimi değişirse artırılır: eski dosyal
 DISK_BUDGET = 320 * 1024 * 1024
 MEM_BUDGET = 192 * 1024 * 1024
 _LIVP_STILLS = (".heic", ".heif", ".jpg", ".jpeg", ".png")
+THUMB_FADE_MS = 180  # yeni gelen küçük resim yer tutucunun üstünde bu sürede belirir (önbellekten gelen anında)
 
 
 # ---------------------------------------------------------------------------------------------------- üretim
@@ -539,7 +542,14 @@ class GalleryDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         pix = self._tile_pixmap(key, side, self._view.devicePixelRatioF())
         if pix is not None:
+            alpha = self._view.thumb_opacity(key)
+            if alpha < 1.0:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(self._placeholder)
+                painter.drawRoundedRect(tile_f, RADIUS, RADIUS)
+                painter.setOpacity(alpha)
             painter.drawPixmap(tile.topLeft(), pix)
+            painter.setOpacity(1.0)
         else:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self._placeholder)
@@ -728,6 +738,10 @@ class GalleryView(QListView):
         self._request_timer = QTimer(self)
         self._request_timer.setSingleShot(True)
         self._request_timer.timeout.connect(self._request_visible)
+        self._fade_started: dict[str, float] = {}
+        self._fade_timer = QTimer(self)
+        self._fade_timer.setInterval(16)
+        self._fade_timer.timeout.connect(self._fade_tick)
         self.selectionModel().currentChanged.connect(self._on_current)
         self.verticalScrollBar().valueChanged.connect(self._schedule_request)
         provider.ready.connect(self._on_thumb_ready)
@@ -836,6 +850,8 @@ class GalleryView(QListView):
     def shutdown(self) -> None:
         self._badge_token += 1
         self._request_timer.stop()
+        self._fade_timer.stop()
+        self._fade_started.clear()
         self._pool.clear()
         self._pool.waitForDone(2000)
 
@@ -877,7 +893,35 @@ class GalleryView(QListView):
         row = self._model.row_of(key)
         if row >= 0:
             self._delegate.clear_scaled(key)
+            first, last = self.visible_range()
+            if first <= row < last and self.isVisible() and animations_enabled():
+                self._fade_started[key] = time.monotonic()
+                if not self._fade_timer.isActive():
+                    self._fade_timer.start()
             self.update(self._model.index(row, 0))
+
+    def thumb_opacity(self, key: str) -> float:
+        """Belirme sürerken 0..1 (yavaşlayarak), yoksa 1."""
+        started = self._fade_started.get(key)
+        if started is None:
+            return 1.0
+        p = (time.monotonic() - started) * 1000.0 / THUMB_FADE_MS
+        if p >= 1.0:
+            return 1.0
+        p = max(0.0, p)
+        return 1.0 - (1.0 - p) * (1.0 - p)
+
+    def is_fading(self) -> bool:
+        return bool(self._fade_started)
+
+    def _fade_tick(self) -> None:
+        now = time.monotonic()
+        limit = THUMB_FADE_MS / 1000.0
+        for key in [k for k, t in self._fade_started.items() if now - t >= limit]:
+            del self._fade_started[key]
+        self.viewport().update()
+        if not self._fade_started:
+            self._fade_timer.stop()
 
     def _start_badges(self) -> None:
         self._badge_token += 1

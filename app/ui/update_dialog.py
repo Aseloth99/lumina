@@ -26,6 +26,7 @@ from app.resources import theme as theme_mod
 from app.resources.locales import t
 from app.ui.chrome_dialog import ChromeDialog
 from app.ui.message_box import _SHADOW
+from app.ui.smooth_progress import SmoothProgressBar
 
 
 _THEMES = ("dark", "light")
@@ -123,7 +124,7 @@ class UpdateDialog(ChromeDialog):
             self.notes_text.setPlainText(notes)  # düz metinde satır sonları korunur (setHtml satırları birleştirirdi)
         layout.addWidget(self.notes_text, 1)  # kalan yükseklik notlarındır; uzun notlar kaydırılır
 
-        self.progress_bar = QProgressBar()
+        self.progress_bar = SmoothProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setMinimumHeight(18)

@@ -10,7 +10,9 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -36,6 +38,7 @@ class DoubleClickOnMediaTest(unittest.TestCase):
         from app.ui.main_window import MainWindow
 
         cls.win = MainWindow()
+        cls.win._reveal_in_explorer = lambda: None  # dosya kapsülüne denk gelen tık testte Gezgin açmasın
         cls.win.resize(1000, 700)
         cls.win.show()
         pump()
@@ -53,7 +56,9 @@ class DoubleClickOnMediaTest(unittest.TestCase):
             w.showNormal()
         if w.isMaximized():
             w.showNormal()
+        w._fs_from_maximized = False
         pump()
+        self.assertFalse(w._max_by_dblclick)
 
     def _send_double_click(self, widget) -> None:
         pos = QPointF(widget.width() * 0.25, widget.height() * 0.3)
@@ -72,12 +77,20 @@ class DoubleClickOnMediaTest(unittest.TestCase):
         """`widget` sinyali yayınlar; olaylar `target`'a (verilmezse widget'a) gider (QGraphicsView'da gerçek hedef viewport'tur)."""
         w = self.win
         emitted: list[int] = []
-        widget.double_clicked.connect(lambda: emitted.append(1))
+
+        def record() -> None:
+            emitted.append(1)
+
+        widget.double_clicked.connect(record)
         try:
             self.assertFalse(w.isMaximized())
             self._send_double_click(target or widget)
         finally:
-            widget.double_clicked.disconnect()
+            # Yalnızca bu kaydı çöz: argümansız disconnect() pencerenin kendi işleyicisini de koparır, sonraki testler bozulur.
+            widget.double_clicked.disconnect(record)
+            if w.isFullScreen():
+                w.toggle_fullscreen()
+                pump()
         self.assertEqual(len(emitted), 1, f"{label}: çift tık medya yüzeyine ulaşmalı (double_clicked yayınlanmalı)")
         self.assertFalse(w.isMaximized(), f"{label}: çift tık pencereyi BÜYÜTMEMELİ")
 
@@ -108,6 +121,126 @@ class DoubleClickOnMediaTest(unittest.TestCase):
         w.nav_bar.mouseDoubleClickEvent(event)
         pump()
         self.assertFalse(w.isMaximized())
+
+    def test_double_click_on_the_file_chip_reveals_once_and_does_not_maximize(self) -> None:
+        """Dosya adı kapsülü tıkla Gezgin'de gösterir; çift tık bunu iki kez yapmamalı, pencereyi de büyütmemeli."""
+        w = self.win
+        calls: list[int] = []
+        w._reveal_in_explorer = lambda: calls.append(1)
+        try:
+            for widget in (w.file_chip, w.lbl_filename):
+                calls.clear()
+                self._send_double_click(widget)
+                self.assertEqual(len(calls), 1, f"{widget.objectName()}: Gezgin tek kez açılmalı")
+                self.assertFalse(w.isMaximized(), f"{widget.objectName()}: çift tık pencereyi büyütmemeli")
+        finally:
+            w._reveal_in_explorer = lambda: None
+
+    def _state(self) -> str:
+        w = self.win
+        return "fullscreen" if w.isFullScreen() else "maximized" if w.isMaximized() else "normal"
+
+    def _nav_double_click(self) -> None:
+        w = self.win
+        pos = QPointF(w.nav_bar.width() * 0.5, w.nav_bar.height() * 0.5)
+        left = Qt.MouseButton.LeftButton
+        w.nav_bar.mouseDoubleClickEvent(QMouseEvent(
+            QEvent.Type.MouseButtonDblClick, pos, QPointF(w.nav_bar.mapToGlobal(pos.toPoint())), left, left,
+            Qt.KeyboardModifier.NoModifier))
+        pump()
+
+    def test_same_screen_point_twice_undoes_the_top_strip_maximize(self) -> None:
+        """Kullanıcının bildirdiği hata: üst şeritte çift tık pencereyi büyütür; büyüyünce aynı ekran noktası fotoğrafın üstüne
+        denk gelir ve ikinci çift tık TAM EKRAN yapıyordu. Şimdi ikinci çift tık büyütmeyi geri alır."""
+        from PyQt6.QtCore import QPoint, QRect
+        from PyQt6.QtTest import QTest
+
+        w = self.win
+        w.stage.stack.setCurrentWidget(w.canvas)
+        avail = w.screen().availableGeometry()
+        geom = QRect(avail.x() + 60, avail.y() + 150, 640, 480)
+        w.setGeometry(geom)
+        pump(10)
+        geom = w.geometry()
+        brand_right = w.brand_bar.mapTo(w, QPoint(0, 0)).x() + w.brand_bar.width()
+        nav_left = w.nav_bar.mapTo(w, QPoint(0, 0)).x()
+        point = QPoint(geom.x() + (brand_right + nav_left) // 2, geom.y() + 25)  # üst şeritte kapsüller arası boşluk
+        self.assertIs(w.childAt(point - geom.topLeft()), w.container)
+        states = []
+        for _ in range(3):
+            QTest.mouseDClick(w.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                              point - w.geometry().topLeft())
+            pump(10)
+            states.append(self._state())
+        self.assertEqual(states, ["maximized", "normal", "maximized"])
+
+    def test_double_click_on_the_photo_undoes_a_double_click_maximize(self) -> None:
+        w = self.win
+        w.stage.stack.setCurrentWidget(w.canvas)
+        pump()
+        self._nav_double_click()
+        self.assertEqual(self._state(), "maximized")
+        self._send_double_click(w.canvas.viewport())
+        self.assertEqual(self._state(), "normal", "çift tıkla büyütülmüş pencerede fotoğrafa çift tık geri yüklemeli")
+        # Hafıza tükendi: sonraki çift tık yine tam ekran.
+        self._send_double_click(w.canvas.viewport())
+        self.assertEqual(self._state(), "fullscreen")
+
+    def test_video_double_click_restores_and_still_undoes_the_instant_pause(self) -> None:
+        w = self.win
+        w.stage.stack.setCurrentWidget(w.player.widget)
+        pump()
+        self._nav_double_click()
+        self.assertEqual(self._state(), "maximized")
+        calls = []
+        with mock.patch.object(w, "toggle_live_playback", lambda: calls.append(1)):
+            w._instant_toggle_at = time.monotonic()  # ilk tık videoyu anında duraklatmıştı
+            w.player.widget.double_clicked.emit()
+            pump()
+        self.assertEqual(calls, [1], "ilk tıkın duraklatması geri alınmalı")
+        self.assertEqual(self._state(), "normal")
+
+    def test_other_state_changes_forget_the_double_click_maximize(self) -> None:
+        w = self.win
+        w.stage.stack.setCurrentWidget(w.canvas)
+        pump()
+        # Büyüt düğmesiyle büyütülen pencerede fotoğrafa çift tık eskisi gibi tam ekrandır.
+        w.btn_max.click()
+        pump()
+        self.assertEqual(self._state(), "maximized")
+        self.assertFalse(w._max_by_dblclick)
+        self._send_double_click(w.canvas.viewport())
+        self.assertEqual(self._state(), "fullscreen")
+        w.toggle_fullscreen()
+        pump()
+        self.assertEqual(self._state(), "maximized")
+        w.showNormal()
+        pump()
+        # Çift tıkla büyütüp tam ekran (F11) aç-kapa: hafıza silinir, fotoğrafa çift tık tam ekran yapar.
+        self._nav_double_click()
+        self.assertTrue(w._max_by_dblclick)
+        w.toggle_fullscreen()
+        pump()
+        self.assertFalse(w._max_by_dblclick)
+        w.toggle_fullscreen()
+        pump()
+        self.assertEqual(self._state(), "maximized")
+        self._send_double_click(w.canvas.viewport())
+        self.assertEqual(self._state(), "fullscreen")
+        w.toggle_fullscreen()
+        pump()
+        # Çift tıkla büyütüp düğmeyle geri yükleyip yine düğmeyle büyüt: hafıza yok.
+        w.showNormal()
+        pump()
+        self._nav_double_click()
+        w.btn_max.click()
+        pump()
+        self.assertEqual(self._state(), "normal")
+        w.btn_max.click()
+        pump()
+        self.assertFalse(w._max_by_dblclick)
+        self._send_double_click(w.canvas.viewport())
+        self.assertEqual(self._state(), "fullscreen")
 
     def test_the_media_surface_check_covers_children_but_not_the_chrome(self) -> None:
         w = self.win

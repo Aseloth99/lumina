@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRunnable, Qt, QThreadPool, QTimer, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import QImage, QPainter, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 
 from app.core.qt_safe import safe_emit
 from app.ui.drops import FileDropMixin
+from app.ui.fade import animations_enabled
 from app.ui.svg_overlay import SvgOverlayController, SvgPixmapItem, is_svg_path
 
 
@@ -28,6 +29,11 @@ WHEEL_STEP = 1.18  # tekerleğin bir çentiği (120 birim)
 LOD_MAX_SCALE = 0.75
 LOD_SETTLE_MS = 120  # yakınlaştırma/pencere boyutu durulunca hazırla
 LOD_MAX_PIXELS = 40_000_000  # Doldur kipinde kopya ekrandan büyük olabilir; bunu aşarsa hazırlanmaz
+
+# Önceki/sonraki fotoğrafa geçerken kısa geçiş: eski kare yeni karenin üstünde saydamlaşır. Çok büyük görüntüde
+# (ekran boyu kopya henüz hazır değilken her kare tüm görüntüyü ölçekler) geçiş atlanır: gezinme akıcı kalsın.
+CROSSFADE_MS = 150
+CROSSFADE_MAX_PIXELS = 30_000_000
 
 
 def wheel_zoom_factor(delta_y: int) -> float:
@@ -68,6 +74,7 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
     context_requested = pyqtSignal(QPoint)
     zoom_changed = pyqtSignal()
     double_clicked = pyqtSignal()
+    user_zoomed = pyqtSignal()  # kullanıcı tekerlekle yakınlaştırdı/uzaklaştırdı (yüzde göstergesi için)
     # Yeni görüntü ekrana ilk kez çizildi (boyama bittikten sonra, olay döngüsünün sonraki turunda).
     # Ana pencere ilk kareyi geciktirmemesi gereken yan işleri (şerit, ön yükleme, Live araması) buna bağlar.
     frame_shown = pyqtSignal()
@@ -130,6 +137,16 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self._lod_timer.setInterval(LOD_SETTLE_MS)
         self._lod_timer.timeout.connect(self._update_lod)
         self.zoom_changed.connect(self._lod_timer.start)
+        # Geçiş: eski görünümün anlık görüntüsü, yeni karenin üstünde 1 → 0 saydamlıkla çizilir.
+        self._fade_pix: QPixmap | None = None
+        self._fade_opacity = 0.0
+        self._fade_anim = QVariantAnimation(self)
+        self._fade_anim.setDuration(CROSSFADE_MS)
+        self._fade_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._fade_anim.setStartValue(1.0)
+        self._fade_anim.setEndValue(0.0)
+        self._fade_anim.valueChanged.connect(self._on_fade_step)
+        self._fade_anim.finished.connect(self._end_crossfade)
 
     # -- ekran boyu kopya
     def _lod_target(self) -> tuple[float, float] | None:
@@ -185,8 +202,46 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         """Görüntü değişti: uçuştaki kopya atılır (nesil), bekleyen değerlendirme yeni görüntü için yapılır."""
         self._lod_gen += 1
 
+    # -- geçiş (crossfade)
+    def is_crossfading(self) -> bool:
+        return self._fade_pix is not None
+
+    def _crossfade_snapshot(self, new: QPixmap) -> QPixmap | None:
+        """Geçiş yapılacaksa ŞU ANKİ görünümün anlık görüntüsü (sürmekte olan geçiş dahil), yoksa None."""
+        if new.isNull() or self.pixmap_item.pixmap().isNull() or not self.isVisible():
+            return None
+        if new.width() * new.height() > CROSSFADE_MAX_PIXELS:
+            return None
+        vp = self.viewport()
+        if vp.width() < 2 or vp.height() < 2 or not animations_enabled():
+            return None
+        snap = vp.grab()
+        return None if snap.isNull() else snap
+
+    def _start_crossfade(self, snapshot: QPixmap) -> None:
+        self._fade_anim.stop()
+        self._fade_pix = snapshot
+        self._fade_opacity = 1.0
+        self._fade_anim.start()
+        self.viewport().update()
+
+    def _on_fade_step(self, value) -> None:
+        self._fade_opacity = float(value)
+        self.viewport().update()
+
+    def _end_crossfade(self) -> None:
+        self._fade_anim.stop()
+        if self._fade_pix is not None:
+            self._fade_pix = None
+            self.viewport().update()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
+        if self._fade_pix is not None and self._fade_opacity > 0.0:
+            p = QPainter(self.viewport())
+            p.setOpacity(self._fade_opacity)
+            p.drawPixmap(0, 0, self._fade_pix)
+            p.end()
         if self._announce_frame and not self.pixmap_item.pixmap().isNull():
             self._announce_frame = False
             self._frame_timer.start()
@@ -212,9 +267,10 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
             return (0, 0)
         return pix.width(), pix.height()
 
-    def set_qimage(self, qimage: QImage) -> None:
+    def set_qimage(self, qimage: QImage, crossfade: bool = False) -> None:
+        """`crossfade=True`: önceki fotoğraftan kısa bir geçişle (gezinme); ilk açılışta/geçiş uygun değilse anında."""
         pix = QPixmap.fromImage(qimage)
-        self.set_pixmap(pix)
+        self.set_pixmap(pix, crossfade=crossfade)
 
     def attach_svg(self, path) -> None:
         """Şu an gösterilen görüntü bu .svg/.svgz dosyasının tabanıysa yakınlaştırmada vektörden yeniden çizim
@@ -255,7 +311,8 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self.centerOn(bounds.left() + fx * bounds.width(), bounds.top() + fy * bounds.height())
         self.zoom_changed.emit()
 
-    def set_pixmap(self, pixmap: QPixmap) -> None:
+    def set_pixmap(self, pixmap: QPixmap, crossfade: bool = False) -> None:
+        snapshot = self._crossfade_snapshot(pixmap) if crossfade else None
         self.stop_gif()
         self._announce_frame = not pixmap.isNull()
         self._rotation = 0
@@ -267,6 +324,8 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self.pixmap_item.setTransformOriginPoint(self.pixmap_item.boundingRect().center())
         self._scene.addItem(self.pixmap_item)
         self.fit_in_window()
+        if snapshot is not None:
+            self._start_crossfade(snapshot)
 
     def stop_gif(self) -> None:
         movie = getattr(self, "_movie", None)
@@ -308,6 +367,7 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         self.pixmap_item.setPixmap(pix)
 
     def clear_image(self) -> None:
+        self._end_crossfade()
         self.stop_gif()
         self._svg.detach()
         self._reset_lod()
@@ -430,10 +490,18 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
     def displayed_scale(self) -> float:
         return float(self.transform().m11())
 
+    def zoom_percent(self) -> int:
+        """Görüntünün ekrandaki boyu, gerçek boyuta (1:1) göre yüzde; döndürülmüş görüntüde de doğru."""
+        t = self.transform()
+        return max(1, round(math.hypot(t.m11(), t.m12()) * 100))
+
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         if self.pixmap_item.pixmap().isNull():
             return
+        before = self.displayed_scale()
         self.zoom_by(wheel_zoom_factor(event.angleDelta().y()))
+        if self.displayed_scale() != before:
+            self.user_zoomed.emit()
         event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
