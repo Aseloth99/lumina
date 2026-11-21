@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from app.core import startup_trace
+from app.ui.hover_fix import settle_hover
 from app.core.settings_store import make_settings
 from app.core.version import (
     get_version,
@@ -55,6 +56,12 @@ from app.core.cache import (
 )
 from app.core.folder_scan import (
     FolderScanWorker,
+)
+from app.core.explorer_sort import (
+    DEFAULT_FALLBACK as DEFAULT_SORT_FALLBACK,
+    EXPLORER as EXPLORER_SORT,
+    FIXED_SORTS,
+    SORT_MODES,
 )
 from app.core.image_loader import (
     ImageLoadWorker,
@@ -154,6 +161,9 @@ from app.ui.chrome_widgets import (
     polish as _polish,
 )
 from app.ui.media_actions import MediaActionsMixin
+from app.ui.fade import WindowFader
+from app.ui.osd import DropHighlight, Osd
+from app.core.recent import add_recent, clear_recent, recent_paths
 from app.ui.live_button import (
     BottomDock,
     make_live_orb,
@@ -178,7 +188,8 @@ FRAME_GATE_MAX_MS = 2500
 NAV_GRACE_MS = 3000
 
 # MainWindow.eventFilter'ın kullandığı olay türleri: ses düğmesi/popup (Enter/Leave/Wheel),
-# tam ekranda arayüzü uyandırma ve Delete kısayolu (fare/klavye). Diğer her olay doğrudan geçer.
+# tam ekranda arayüzü uyandırma, Delete kısayolu (fare/klavye) ve dışarıdan dosya sürüklenirken sahne vurgusu.
+# Diğer her olay doğrudan geçer.
 _MAIN_FILTER_EVENT_TYPES = frozenset(
     {
         QEvent.Type.Enter,
@@ -189,7 +200,14 @@ _MAIN_FILTER_EVENT_TYPES = frozenset(
         QEvent.Type.MouseButtonRelease,
         QEvent.Type.MouseButtonDblClick,
         QEvent.Type.KeyPress,
+        QEvent.Type.DragEnter,
+        QEvent.Type.DragMove,
+        QEvent.Type.DragLeave,
+        QEvent.Type.Drop,
     }
+)
+_DRAG_EVENT_TYPES = frozenset(
+    {QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.DragLeave, QEvent.Type.Drop}
 )
 
 
@@ -217,9 +235,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         # Marka solda, pencere kontrolleri sağda ayrı cam kapsüllerdir.
         self.chrome_side = "right"
         self.settings.setValue("chrome_side", "right")
-        self.sort_by = str(self.settings.value("sort_by", "date_asc"))
-        if self.sort_by not in {"date_asc", "date_desc", "name_asc", "name_desc"}:
-            self.sort_by = "date_asc"
+        self._load_sort_setting()
         self.audio_device = str(self.settings.value("audio_device", "auto") or "auto")
         self._strip_open = self._setting_bool("strip_open", True)
         # Son seçilen görünüm kipi (Sığdır / Doldur): her yeni dosyada ve bir sonraki açılışta geçerli olur.
@@ -436,6 +452,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
                     getattr(self, "_nav_host", None),
                     getattr(self, "_busy_host", None),
                     getattr(getattr(self, "_toast", None), "host", None),
+                    getattr(getattr(self, "_osd", None), "host", None),
+                    getattr(getattr(self, "_drop_hl", None), "host", None),
                 ):
                     if host is not None:
                         host.hide()
@@ -495,6 +513,12 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         toast = getattr(self, "_toast", None)
         if toast is not None:
             toast.hide()
+        osd = getattr(self, "_osd", None)
+        if osd is not None:
+            osd.hide()
+        drop_hl = getattr(self, "_drop_hl", None)
+        if drop_hl is not None:
+            drop_hl.hide(animated=False)
         popup = getattr(self, "volume_popup", None)
         if popup is not None and popup.isVisible():
             popup.hide()
@@ -705,23 +729,43 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._brand_host = OverlayHost(self)
         self._nav_host = OverlayHost(self)
         self._chip_host = OverlayHost(self)
+        # Tam ekranda kapsüller boşta kalınca birden kaybolmak yerine kısa bir solmayla gizlenir/görünür.
+        self._fs_faders = {
+            host: WindowFader(host) for host in (self._dock_host, self._brand_host, self._nav_host, self._chip_host)
+        }
+        # Sarma / hız / döngü / yakınlaştırma için ekran üstü bilgi ve sürükle-bırak vurgusu (bkz. app/ui/osd.py).
+        self._osd = Osd(self)
+        self._osd_seek_total = 0
+        self._osd_seek_text = ""
+        self._drop_hl = DropHighlight(self)
+        self._drop_hide_timer = QTimer(self)
+        self._drop_hide_timer.setSingleShot(True)
+        self._drop_hide_timer.setInterval(90)
+        self._drop_hide_timer.timeout.connect(lambda: self._drop_hl.hide())
 
 
 
         def _on_double_click_fs(event):
             if event.button() == Qt.MouseButton.LeftButton:
-                self.toggle_fullscreen()
+                if not self.undo_double_click_maximize():
+                    self.toggle_fullscreen()
                 event.accept()
                 return
 
         def _on_double_click_max(event):
             if event.button() == Qt.MouseButton.LeftButton:
-                self.toggle_maximize()
+                self.double_click_maximize()
                 event.accept()
                 return
 
+        def _on_chip_double_click(event):
+            # Kapsüle tıklamak dosyayı Gezgin'de gösterir; ilk tık bunu zaten yaptı. Çift tık ikinci bir Gezgin
+            # penceresi açmasın, pencereyi de büyütmesin (yoksa tek hareket iki iş yapardı).
+            event.accept()
+
         self.nav_bar.mouseDoubleClickEvent = _on_double_click_max
-        self.file_chip.mouseDoubleClickEvent = _on_double_click_max
+        self.file_chip.mouseDoubleClickEvent = _on_chip_double_click
+        self.lbl_filename.mouseDoubleClickEvent = _on_chip_double_click
 
         self.empty = EmptyState()
         self.empty.mouseDoubleClickEvent = _on_double_click_fs
@@ -733,6 +777,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.canvas.context_requested.connect(self.show_photo_menu)
         self.canvas.zoom_changed.connect(self._refresh_mode_buttons)
         self.canvas.double_clicked.connect(self._on_surface_double_clicked)
+        self.canvas.user_zoomed.connect(self._flash_zoom)
 
         self.player = LivePlayer(self)
         self.player.finished.connect(self._on_playback_finished)
@@ -1172,12 +1217,14 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.canvas.set_fill_mode(False)
         self.player.widget.reset_view()
         self._refresh_mode_buttons()
+        self._flash_zoom()
 
     def _on_fill_clicked(self) -> None:
         self._remember_view_mode(True)
         self.canvas.set_fill_mode(True)
         self.player.widget.set_cover(True)
         self._refresh_mode_buttons()
+        self._flash_zoom()
 
     def _on_actual_size_clicked(self) -> None:
         if self.stage.stack.currentWidget() is self.player.widget:
@@ -1185,12 +1232,45 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         else:
             self.canvas.reset_view_to_actual()
         self._refresh_mode_buttons()
+        self._flash_zoom()
 
     def _zoom_by(self, factor: float) -> None:
         if self.stage.stack.currentWidget() is self.player.widget:
             self.player.widget.zoom_by(factor)
         else:
             self.canvas.zoom_by(factor)
+            self._flash_zoom()
+
+    # --- ekran üstü bilgi (OSD) ---
+    def _show_osd(self, text: str) -> None:
+        osd = getattr(self, "_osd", None)
+        if osd is None or not self.isVisible() or self.isMinimized():
+            return
+        anchor = QRect(self.stage.mapToGlobal(QPoint(0, 0)), self.stage.size())
+        osd.show_text(text, anchor)
+
+    def _flash_zoom(self) -> None:
+        """Fotoğraf yakınlaştırılınca ekrandaki boyu yüzde olarak kısa süre göster (%100 = gerçek boyut)."""
+        if self.stage.stack.currentWidget() is not self.canvas or self.canvas.pixmap_item.pixmap().isNull():
+            return
+        self._show_osd(self.t("osd_zoom").format(self.canvas.zoom_percent()))
+
+    def _flash_seek(self, delta_ms: int) -> None:
+        """Sarma miktarı: art arda aynı yöne basılınca toplanır (+5 sn → +10 sn)."""
+        total = self._osd_seek_total
+        showing_seek = self._osd.is_visible() and self._osd.text() == self._osd_seek_text
+        if not showing_seek or total == 0 or (total > 0) != (delta_ms > 0):
+            total = 0
+        total += int(delta_ms)
+        self._osd_seek_total = total
+        seconds = abs(total) / 1000.0
+        amount = f"{seconds:g}" if seconds < 10 else str(round(seconds))
+        sign = "+" if total >= 0 else "−"
+        self._osd_seek_text = self.t("osd_seek").format(f"{sign}{amount}")
+        self._show_osd(self._osd_seek_text)
+
+    def _flash_speed(self) -> None:
+        self._show_osd(self.t("osd_speed").format(f"{self.player.speed:g}×"))
 
     def _refresh_mode_buttons(self) -> None:
         if not hasattr(self, "btn_fit") or not hasattr(self, "btn_fill"):
@@ -1707,6 +1787,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if self._undo is not None:
             add(menu_icon("undo"), self.t("undo"), self.undo_delete, "Ctrl+Z")
         menu.exec(global_pos)
+        if self.gallery is not None:
+            settle_hover(self.gallery.viewport())  # menü dışına tıklanınca karo üzerine gelinmiş gibi kalmasın
 
     def _refresh_live_overlays(self) -> None:
         live = self.current_match is not None
@@ -1739,6 +1821,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         target = Path(target_path)
         if not target.exists():
             return
+        self._remember_recent(target)
         if target.is_file() and target.suffix.lower() in VIDEO_EXTS:
             still = still_for_video(target)
             if still is not None:
@@ -1785,7 +1868,11 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         shown = self.current_file()
         current_name = shown.name if shown else ""
         self._scan_token += 1
-        worker = FolderScanWorker(self._watched_folder, current_name, self._scan_token, self.sort_by)
+        worker = FolderScanWorker(
+            self._watched_folder, current_name, self._scan_token, self._scan_sort_for_rescan(),
+            fallback_sort=self.sort_fallback,
+        )
+        worker.signals.sort_resolved.connect(self._on_sort_resolved)
         worker.signals.ready.connect(self._on_folder_listed)
         worker.signals.failed.connect(self._on_folder_scan_failed)
         self.pool.start(worker)
@@ -1800,7 +1887,11 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         worker = FolderScanWorker(
             str(folder), current_name, token, self.sort_by,
             progressive=True, is_current=lambda: token == self._scan_token, refine_gate=gate,
+            fallback_sort=self.sort_fallback,
         )
+        if self.sort_by != EXPLORER_SORT:
+            self._active_sort, self._active_sort_from_explorer = self.sort_by, False
+        worker.signals.sort_resolved.connect(self._on_sort_resolved)
         worker.signals.ready.connect(self._on_folder_listed)
         worker.signals.failed.connect(self._on_folder_scan_failed)
         self.pool.start(worker)
@@ -1878,9 +1969,11 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if self._video_can_seek():
             self._end_nav_grace()  # bilerek sarıldı: oklar artık sarar
             self.player.skip(delta_ms)
+            self._flash_seek(delta_ms)
             return True
         if self._seek_finished_video(delta_ms):
             self._end_nav_grace()
+            self._flash_seek(delta_ms)
             return True
         return False
 
@@ -1914,11 +2007,18 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if self._transport_ready():
             self._end_nav_grace()
             self.player.step_speed(direction)
+            self._flash_speed()
 
     def _reset_speed(self) -> None:
         if self._transport_ready():
             self._end_nav_grace()
             self.player.reset_speed()
+            self._flash_speed()
+
+    def _choose_speed(self, value: float) -> None:
+        self._end_nav_grace()
+        self.player.set_speed(value)
+        self._flash_speed()
 
     def _toggle_loop(self) -> None:
         if not self._transport_ready():
@@ -1927,6 +2027,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         enabled = not self.player.loop
         self.player.set_loop(enabled)
         self.settings.setValue("loop_video", enabled)
+        self._show_osd(self.t("loop_on" if enabled else "loop_off"))
 
     def _fill_speed_menu(self, menu: QMenu) -> None:
         current = self.player.speed
@@ -1937,7 +2038,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             act = QAction(label, menu)
             act.setCheckable(True)
             act.setChecked(abs(value - current) < 1e-6)
-            act.triggered.connect(lambda _checked=False, v=value: (self._end_nav_grace(), self.player.set_speed(v)))
+            act.triggered.connect(lambda _checked=False, v=value: self._choose_speed(v))
             menu.addAction(act)
 
     def _show_speed_menu(self) -> None:
@@ -1945,6 +2046,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._fill_speed_menu(menu)
         top_left = self.btn_speed.mapToGlobal(QPoint(0, 0))
         menu.exec(QPoint(top_left.x(), top_left.y() - menu.sizeHint().height() - 4))
+        settle_hover(self.btn_speed)
 
     def _nav_or_seek(self, direction: int, step_ms: int) -> None:
         """← / →: video oynuyorsa (ya da duraklatılmışsa) sarar, yoksa önceki/sonraki dosyaya geçer.
@@ -2134,13 +2236,54 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             # dosya açmadaki yeni pencere davranışına sapmamalı.
             self.load_path(folder)
 
+    def _load_sort_setting(self) -> None:
+        """Sıralama kipi: "explorer" (Gezgin ile aynı, varsayılan) ya da sabit bir sıra. `sort_fallback`: Gezgin'in sırası
+        okunamadığında (klasör hiçbir Gezgin penceresinde açık değil, sütun desteklenmiyor) kullanılan sabit sıra.
+
+        Tek seferlik geçiş: daha önce sabit bir sıra seçmiş kullanıcı da bir kez "Gezgin ile aynı"ya alınır; seçtiği sıra
+        yedek olarak kalır (Gezgin açık değilken yine o kullanılır). Kullanıcı sonra sabit bir sıra seçerse ona uyulur."""
+        saved = str(self.settings.value("sort_by", "") or "")
+        fallback = str(self.settings.value("sort_fallback", "") or "")
+        if not self._setting_bool("sort_explorer_migrated", False):
+            if saved in FIXED_SORTS and fallback not in FIXED_SORTS:
+                fallback = saved
+            saved = EXPLORER_SORT
+            self.settings.setValue("sort_by", saved)
+            if fallback in FIXED_SORTS:
+                self.settings.setValue("sort_fallback", fallback)
+            self.settings.setValue("sort_explorer_migrated", True)
+        self.sort_by = saved if saved in SORT_MODES else EXPLORER_SORT
+        self.sort_fallback = fallback if fallback in FIXED_SORTS else DEFAULT_SORT_FALLBACK
+        # Son taramada gerçekten kullanılan sabit sıra ve Gezgin'den okunup okunmadığı (menü etiketi, yeniden taramalar).
+        self._active_sort: str | None = None
+        self._active_sort_from_explorer = False
+
+    def _on_sort_resolved(self, mode: str, from_explorer: bool, token: int) -> None:
+        if token != self._scan_token:
+            return
+        self._active_sort = mode
+        self._active_sort_from_explorer = bool(from_explorer)
+
+    def _scan_sort_for_rescan(self) -> str:
+        """Klasör içeriği değişince yapılan yeniden taramada sıra değişmesin: Gezgin kipinde son açılışta okunan sıra
+        kullanılır (bu arada Gezgin penceresi kapatılmış olabilir; liste birden başka sıraya atlamasın)."""
+        if self.sort_by == EXPLORER_SORT and self._active_sort in FIXED_SORTS:
+            return self._active_sort
+        return self.sort_by
+
     def set_sort_mode(self, mode: str) -> None:
-        if mode not in {"date_asc", "date_desc", "name_asc", "name_desc"}:
+        if mode not in SORT_MODES:
             return
         if self.sort_by == mode:
             return
         self.sort_by = mode
         self.settings.setValue("sort_by", mode)
+        if mode in FIXED_SORTS:
+            # Son seçilen sabit sıra, "Gezgin ile aynı" kipinde Gezgin okunamadığında da kullanılır.
+            self.sort_fallback = mode
+            self.settings.setValue("sort_fallback", mode)
+        self._active_sort = None
+        self._active_sort_from_explorer = False
         curr = self.current_file()
         if curr is not None and curr.parent.is_dir():
             self._scan_token += 1
@@ -2406,7 +2549,14 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if display is None or not same_path_text(path, display):
             return
         startup_trace.mark("image_set")
-        self.canvas.set_qimage(QImage(qimage))
+        # Gezinmede önceki fotoğraftan kısa bir geçişle; ilk açılışta, video oynarken ya da galeriden gelişte anında.
+        crossfade = (
+            self.stage.stack.currentWidget() is self.canvas
+            and not self._playing
+            and not self._opening_play
+            and not self._gallery_on
+        )
+        self.canvas.set_qimage(QImage(qimage), crossfade=crossfade)
         self.canvas.attach_svg(path)  # .svg/.svgz: yakınlaştırınca görünen bölge vektörden yeniden çizilir
         self._remember_shown_image(path, qimage)
         QTimer.singleShot(0, self.canvas.fit_in_window)
@@ -2655,6 +2805,9 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._instant_toggle_at = None
         if t is not None and time.monotonic() - t <= QApplication.doubleClickInterval() / 1000 + 0.15:
             self.toggle_live_playback()
+        # Pencere bir önceki çift tıkla büyütüldüyse (üst şeritte) bu çift tık onu geri alır; tam ekrana geçmez.
+        if self.undo_double_click_maximize():
+            return
         self.toggle_fullscreen()
 
     def _on_video_clicked(self) -> None:
@@ -2736,6 +2889,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         act_new = QAction(menu_icon("new_window"), self.t("new_window"), self)
         act_new.triggered.connect(self.open_new_window)
         menu.addAction(act_new)
+        self._add_recent_submenu(menu)
         menu.addSeparator()
 
         self._add_sort_submenu(menu)
@@ -2856,9 +3010,43 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         menu.addAction(act_quit)
 
         menu.exec(self.btn_settings.mapToGlobal(QPoint(0, self.btn_settings.height() + 6)))
+        settle_hover(self.btn_settings)  # dışarı tıklanıp kapanınca düğme üzerine gelinmiş gibi kalmasın
 
     def _show_about(self) -> None:
         self.open_settings_dialog(2)
+
+    # --- son açılanlar ---
+    def _remember_recent(self, target: Path) -> None:
+        try:
+            add_recent(self.settings, target)
+        except Exception:  # noqa: BLE001 — liste yan bilgidir; açmayı asla engellemez
+            pass
+
+    def _add_recent_submenu(self, parent_menu: QMenu) -> QMenu | None:
+        """⋯ menüsünde "Son Açılanlar": bu ve öteki Lumina pencerelerinde açılan dosya/klasörler (yenisi üstte)."""
+        try:
+            items = recent_paths(self.settings)
+        except Exception:  # noqa: BLE001
+            items = []
+        if not items:
+            return None
+        sub = parent_menu.addMenu(menu_icon("recent"), self.t("recent"))
+        fm = sub.fontMetrics()
+        for text in items:
+            target = Path(text)
+            is_dir = target.is_dir() if not text.startswith(("\\\\", "//")) else False
+            label = fm.elidedText(target.name or text, Qt.TextElideMode.ElideMiddle, 320).replace("&", "&&")
+            act = QAction(menu_icon("folder" if is_dir else "file"), label, sub)
+            act.setToolTip(text)
+            act.setStatusTip(text)
+            act.triggered.connect(lambda _c=False, p=text: self.load_path(p))
+            sub.addAction(act)
+        sub.setToolTipsVisible(True)
+        sub.addSeparator()
+        act_clear = QAction(self.t("recent_clear"), sub)
+        act_clear.triggered.connect(lambda: clear_recent(self.settings))
+        sub.addAction(act_clear)
+        return sub
 
     def _bind_notice(self) -> None:
         """Güncelleme hizmetine bağlan (bir kez). Hizmet ilk kareden sonra kurulur; app.main kurduktan
@@ -2901,6 +3089,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         group = QActionGroup(sort_menu)
         group.setExclusive(True)
         options = [
+            (EXPLORER_SORT, self._explorer_sort_label()),
             ("date_asc", self.t("sort_date_asc")),
             ("date_desc", self.t("sort_date_desc")),
             ("name_asc", self.t("sort_name_asc")),
@@ -2913,7 +3102,21 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             act.triggered.connect(lambda _, m=mode: self.set_sort_mode(m))
             group.addAction(act)
             sort_menu.addAction(act)
+            if mode == EXPLORER_SORT:
+                act.setToolTip(self.t("sort_explorer_tip"))
+                sort_menu.addSeparator()
+        sort_menu.setToolTipsVisible(True)
         return sort_menu
+
+    def _explorer_sort_label(self) -> str:
+        """ "Gezgin ile aynı", etkin kipse kullanılan sırayla: "Gezgin ile aynı (Tarih ↓)"; Gezgin'den okunamadıysa
+        yedek sırayla: "Gezgin ile aynı (Gezgin'de açık değil: Ad ↑)"."""
+        base = self.t("sort_explorer")
+        if self.sort_by != EXPLORER_SORT or self._active_sort not in FIXED_SORTS:
+            return base
+        order = self.t(f"sort_short_{self._active_sort}")
+        key = "sort_explorer_active" if self._active_sort_from_explorer else "sort_explorer_fallback"
+        return self.t(key).format(name=base, order=order)
 
     def _show_file_chip_menu(self, pos: QPoint) -> None:
         path = self.current_file()
@@ -2934,11 +3137,11 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         menu.addSeparator()
 
         act_copy_name = QAction(menu_icon("copy"), self.t("copy_name"), self)
-        act_copy_name.triggered.connect(lambda: QApplication.clipboard().setText(path.name))
+        act_copy_name.triggered.connect(lambda: self._copy_text(path.name, "copied_name"))
         menu.addAction(act_copy_name)
 
         act_copy_path = QAction(menu_icon("copy"), self.t("copy_path"), self)
-        act_copy_path.triggered.connect(lambda: QApplication.clipboard().setText(str(path.resolve())))
+        act_copy_path.triggered.connect(lambda: self._copy_text(str(path.resolve()), "copied_path"))
         menu.addAction(act_copy_path)
 
         menu.addSeparator()
@@ -2947,6 +3150,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         sender = self.sender()
         target = sender if isinstance(sender, QWidget) else self.file_chip
         menu.exec(target.mapToGlobal(pos))
+        settle_hover(target)
 
     def _check_updates(self) -> None:
         from app.ui.updates import get_update_service
@@ -3211,6 +3415,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self._cursor_blank = False
 
         # Devam eden animasyonları durdur
+        self._stop_chrome_fades()
         for a in getattr(self, "_chrome_anims", []):
             try:
                 a.stop()
@@ -3324,35 +3529,51 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         curr_fn = self.current_file() if hasattr(self, "current_file") else None
         loaded = bool(getattr(self, "image_files", [])) or bool(getattr(self, "_playing", False)) or (curr_fn is not None)
         if hasattr(self, "_dock_host") and loaded and not self._gallery_on:
-            self._dock_host.show()
-            self._dock_host.raise_()
+            self._fade_host_in(self._dock_host)
             if hasattr(self, "dock_wrap"):
                 self.dock_wrap.show()
             if hasattr(self, "bottom_dock"):
                 self.bottom_dock.show()
         if hasattr(self, "_brand_host"):
-            self._brand_host.show()
-            self._brand_host.raise_()
+            self._fade_host_in(self._brand_host)
         lbl = getattr(self, "lbl_filename", None)
         lbl_has_text = bool(lbl.text()) if lbl is not None else False
         if hasattr(self, "_chip_host") and loaded and lbl_has_text:
-            self._chip_host.show()
-            self._chip_host.raise_()
+            self._fade_host_in(self._chip_host)
         if hasattr(self, "_nav_host"):
-            self._nav_host.show()
-            self._nav_host.raise_()
+            self._fade_host_in(self._nav_host)
+
+    def _fade_host_in(self, host) -> None:
+        """Tam ekran kapsülü: gizliyse (ya da kayboluyorsa) kısa bir solmayla görünür (animasyonlar kapalıysa anında)."""
+        fader = getattr(self, "_fs_faders", {}).get(host)
+        if fader is None:
+            host.show()
+        else:
+            fader.fade_in()
+        host.raise_()
 
     def _hide_fullscreen_chrome(self) -> None:
         if not self.isFullScreen():
             return
+        faders = getattr(self, "_fs_faders", {})
         for host in (
             getattr(self, "_dock_host", None),
             getattr(self, "_brand_host", None),
             getattr(self, "_chip_host", None),
             getattr(self, "_nav_host", None),
         ):
-            if host is not None:
+            if host is None:
+                continue
+            fader = faders.get(host)
+            if fader is None:
                 host.hide()
+            else:
+                fader.fade_out()
+
+    def _stop_chrome_fades(self) -> None:
+        """Pencereli moda dönüş/küçültme: süren solmaları kes, kapsül pencereleri tam saydamlığa dönsün."""
+        for fader in getattr(self, "_fs_faders", {}).values():
+            fader.stop()
 
     def _layout_overlay_dock(self) -> None:
         if not hasattr(self, "dock_wrap") or not hasattr(self, "bottom_dock"):
@@ -3447,6 +3668,9 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         # Uygulama genelinde her olaya çağrılır; aşağıdaki mantık yalnızca bu türleri kullanır.
         if event.type() not in _MAIN_FILTER_EVENT_TYPES:
             return super().eventFilter(watched, event)
+        if event.type() in _DRAG_EVENT_TYPES:
+            self._track_drop_highlight(watched, event)
+            return super().eventFilter(watched, event)
 
         if hasattr(self, "btn_audio") and watched is self.btn_audio:
             if event.type() == QEvent.Type.Enter:
@@ -3506,6 +3730,26 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
                 return True
 
         return super().eventFilter(watched, event)
+
+    def _track_drop_highlight(self, watched, event) -> None:
+        """Dışarıdan (Gezgin vb.) dosya sürüklenirken sahneyi çerçevele; bırakınca ya da pencereden çıkınca kaldır.
+        Alt parçalar arasında gezinirken gelen Leave→Enter çifti kısa gecikmeyle yutulur (titreme olmasın)."""
+        hl = getattr(self, "_drop_hl", None)
+        if hl is None or not isinstance(watched, QWidget) or watched.window() is not self:
+            return
+        kind = event.type()
+        if kind in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+            if event.source() is not None or not event.mimeData().hasUrls():
+                return
+            self._drop_hide_timer.stop()
+            if not hl.is_shown() and self.isVisible() and not self.isMinimized():
+                hl.show_over(QRect(self.stage.mapToGlobal(QPoint(0, 0)), self.stage.size()), self.t("drop_hint"))
+        elif kind == QEvent.Type.DragLeave:
+            if hl.is_shown():
+                self._drop_hide_timer.start()
+        elif kind == QEvent.Type.Drop:
+            self._drop_hide_timer.stop()
+            hl.hide(animated=False)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         key = event.key()
@@ -3677,6 +3921,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if pix.isNull():
             return
         QApplication.clipboard().setPixmap(pix)
+        self._flash(self.t("copied_image"), msec=1800)
 
     def _copy_file(self) -> None:
         path = self.current_file()
@@ -3685,6 +3930,12 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(path.resolve()))])
         QApplication.clipboard().setMimeData(mime)
+        self._flash(self.t("copied_file"), msec=1800)
+
+    def _copy_text(self, text: str, done_key: str) -> None:
+        """Dosya adı / yolu panoya; kısa "kopyalandı" bilgisi."""
+        QApplication.clipboard().setText(text)
+        self._flash(self.t(done_key), msec=1800)
 
     def _print_image(self) -> None:
         pix = self.canvas.pixmap_item.pixmap()
@@ -3767,17 +4018,34 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         unique = self._delete_targets(path)
         try:
             discard_undo(self._undo)
-            self._undo = recycle_with_undo(unique)
+            self._undo = None
+            bundle = recycle_with_undo(unique)
         except Exception as exc:
             MessageBox.warning(self, self.t("error"), self.t("delete_fail").format(exc))
             # Oynatma durduruldu; görünümü geri kur ki LIVE düğmesi/seek çubuğu kaybolmasın.
             self.display_current()
             return
+        self._undo = bundle
         self._drop_from_listing(unique)
+        # Geri alma gerçektir: dosyalar silinmeden önce geçici bir klasöre yedeklenir (bkz. recycle_with_undo).
+        self._flash(
+            self.t("deleted_recycle").format(path.name),
+            self.t("undo"),
+            lambda b=bundle: self._undo_delete_bundle(b),
+            msec=6000,
+        )
+
+    def _undo_delete_bundle(self, bundle) -> None:
+        """Bilgi kapsülündeki "Geri Al": yalnızca o silmenin yedeği hâlâ geçerliyse (araya başka silme girmediyse)."""
+        if bundle is not None and bundle is self._undo:
+            self.undo_delete()
 
     def undo_delete(self) -> None:
         if self._undo is None:
             return
+        toast = getattr(self, "_toast", None)
+        if toast is not None:
+            toast.hide()
         try:
             restored = restore_files(self._undo.originals, self._undo.backups)
         except Exception as exc:
@@ -3831,6 +4099,11 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             return
 
         self._drop_from_listing(deleted)
+        if errors:  # bir kısmı silinemedi (ör. eşlenik video kilitli)
+            MessageBox.warning(self, self.t("error"), self.t("delete_fail").format("; ".join(errors)))
+        else:
+            # Kalıcı silmenin geri alınması yok: sahte bir "Geri Al" sunulmaz, yalnızca bildirilir.
+            self._flash(self.t("deleted_permanent").format(path.name), msec=3200)
 
     def rename_current(self) -> None:
         path = self.current_file()
@@ -3894,20 +4167,46 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         save_path, _ = QFileDialog.getSaveFileName(
             self,
             self.t("save_as"),
-            str(path.name),
+            str(self._save_as_dir(path) / path.name),
             filters,
         )
         if not save_path:
             return
         dest = Path(save_path)
+        if not dest.suffix:
+            dest = dest.with_name(dest.name + path.suffix)  # uzantısız ad: özgün biçimde kopya
         try:
             pix = self.canvas.pixmap_item.pixmap()
             if not pix.isNull() and dest.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".webp"} and dest.suffix.lower() != ext:
-                pix.save(str(dest))
+                if not pix.save(str(dest)):
+                    raise OSError(self.t("save_as_encode_fail").format(dest.suffix.lower()))
             else:
                 shutil.copy2(path, dest)
         except Exception as exc:
             MessageBox.warning(self, self.t("error"), self.t("save_as_fail").format(exc))
+            return
+        self.settings.setValue("save_as_dir", str(dest.parent))
+        self._flash(
+            self.t("saved_as").format(dest.name),
+            self.t("show"),
+            lambda d=dest: reveal_in_explorer(d),
+        )
+
+    def _save_as_dir(self, path: Path) -> Path:
+        """Farklı Kaydet'in açılacağı klasör: dosyanın kendi klasörü; oraya yazılamıyorsa (salt okunur, ağ paylaşımı…)
+        son kaydedilen klasör, o da yoksa Resimler."""
+        import os
+
+        if os.access(path.parent, os.W_OK):
+            return path.parent
+        last = str(self.settings.value("save_as_dir", "") or "")
+        if last:
+            try:
+                if Path(last).is_dir():
+                    return Path(last)
+            except OSError:
+                pass
+        return self._frame_save_dir(path)
 
     def _open_with(self) -> None:
         path = self.current_file()
@@ -3946,6 +4245,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             getattr(self, "_nav_host", None),
             getattr(self, "_busy_host", None),
             getattr(getattr(self, "_toast", None), "host", None),
+            getattr(getattr(self, "_osd", None), "host", None),
+            getattr(getattr(self, "_drop_hl", None), "host", None),
         ):
             if host is not None:
                 try:

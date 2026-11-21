@@ -50,6 +50,7 @@ from app.ui.icons import (
 )
 from app.ui.update_check_ui import UpdateCheckAnimator
 from app.ui.updates import UpdateService, get_update_service
+from app.ui.smooth_progress import SmoothProgressBar
 
 if TYPE_CHECKING:
     from app.ui.main_window import MainWindow
@@ -448,7 +449,7 @@ class SettingsDialog(ChromeDialog):
         self.btn_merge.clicked.connect(self._on_start_merge)
         self.card_merge.layout().addWidget(self.btn_merge)
 
-        self.progress_bar = QProgressBar(self.card_merge)
+        self.progress_bar = SmoothProgressBar(self.card_merge)
         self.progress_bar.setObjectName("merge_progress")
         self.progress_bar.setFixedHeight(6)
         self.progress_bar.setTextVisible(False)

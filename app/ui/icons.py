@@ -820,6 +820,19 @@ def _draw_resume(p: QPainter) -> None:
     p.drawPolygon(QPolygonF([QPointF(13.5, 11.5), QPointF(21, 16), QPointF(13.5, 20.5)]))
 
 
+def _draw_recent(p: QPainter) -> None:
+    """Saat: "Son Açılanlar"."""
+    color = _c("teal")
+    p.setPen(_pen(color, 2.0))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(QRectF(5.5, 5.5, 21, 21))
+    p.drawLine(QPointF(16, 16), QPointF(16, 9.5))
+    p.drawLine(QPointF(16, 16), QPointF(20.8, 18.6))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QBrush(color))
+    p.drawEllipse(QPointF(16, 16), 1.6, 1.6)
+
+
 def _draw_apps(p: QPainter) -> None:
     p.setPen(Qt.PenStyle.NoPen)
     for (x, y), color in zip(((6.5, 6.5), (17, 6.5), (6.5, 17), (17, 17)), ("red", "green", "blue", "amber")):
@@ -1050,6 +1063,7 @@ _MENU_DRAWERS = {
     "globe": _draw_globe,
     "autoplay": _draw_autoplay,
     "resume": _draw_resume,
+    "recent": _draw_recent,
     "info": _draw_info,
     "apps": _draw_apps,
     "shell": _draw_shell,

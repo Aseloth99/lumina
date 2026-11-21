@@ -8,6 +8,7 @@ from typing import Callable
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
+from app.core.explorer_sort import resolve_sort
 from app.core.matcher import index_in_folder, list_folder_media
 from app.core.qt_safe import safe_emit
 
@@ -17,6 +18,8 @@ REFINE_GATE_MAX_S = 3.0
 class FolderScanSignals(QObject):
     ready = pyqtSignal(str, list, int, int)  # folder, path strings, current idx, token
     failed = pyqtSignal(str, int)
+    # Kullanılan sabit sıralama, Gezgin'den mi okundu, token ("Gezgin ile aynı" kipinde listeden ÖNCE yayınlanır).
+    sort_resolved = pyqtSignal(str, bool, int)
 
 
 class FolderScanWorker(QRunnable):
@@ -29,12 +32,15 @@ class FolderScanWorker(QRunnable):
         progressive: bool = False,
         is_current: Callable[[], bool] | None = None,
         refine_gate: threading.Event | None = None,
+        fallback_sort: str = "date_asc",
     ) -> None:
         super().__init__()
         self.folder = folder
         self.current_name = current_name
         self.token = token
+        # sort_by "explorer" ise sıra taramada Gezgin'den okunur (COM; arayüz iş parçacığı beklemez), okunamazsa fallback_sort.
         self.sort_by = sort_by
+        self.fallback_sort = fallback_sort
         # progressive: önce EXIF okumadan (mtime) hızlı liste, ardından EXIF ile inceltilmiş liste.
         self.progressive = progressive
         self._is_current = is_current
@@ -53,6 +59,11 @@ class FolderScanWorker(QRunnable):
     def run(self) -> None:
         try:
             folder = Path(self.folder)
+            if self.sort_by not in ("date_asc", "date_desc", "name_asc", "name_desc"):
+                self.sort_by, from_explorer = resolve_sort(self.sort_by, self.fallback_sort, self.folder)
+                if self._stale():
+                    return
+                safe_emit(self.signals, "sort_resolved", self.sort_by, from_explorer, self.token)
             if self.progressive and self.sort_by.startswith("date"):
                 quick = list_folder_media(folder, sort_by=self.sort_by, refine_exif=False)
                 if self._stale():

@@ -142,9 +142,9 @@ class OpenDoesNotWaitForScanTest(_Base):
         win = self.win
         orig = win.canvas.set_qimage
 
-        def spy(img):
+        def spy(img, *args, **kwargs):
             shown.append(scan_done.is_set())
-            return orig(img)
+            return orig(img, *args, **kwargs)
 
         win.canvas.set_qimage = spy
         self.addCleanup(lambda: setattr(win.canvas, "set_qimage", orig))

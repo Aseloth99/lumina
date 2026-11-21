@@ -82,6 +82,13 @@ hiddenimports += [
     "imagecodecs._avif",
     "imagecodecs._jpegxr",
     "app.core.hdr",
+    # Shell COM: Gezgin sıralaması (app.core.explorer_sort) ve video ayrıntıları (app.core.exif). İşlev içinden içe
+    # aktarıldıkları için açıkça listelenir; dinamik Dispatch pywin/win32ui (dışlanan MFC) gerektirmez.
+    "app.core.explorer_sort",
+    "pythoncom",
+    "pywintypes",
+    "win32com",
+    "win32com.client",
     "PyQt6.QtCore",
     "PyQt6.QtGui",
     "PyQt6.QtWidgets",
