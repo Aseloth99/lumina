@@ -900,5 +900,40 @@ class RealPlatformFit(unittest.TestCase):
         self.assertIn("FIT-OK", proc.stdout)
 
 
+class ParentGoneWhileOpenTest(unittest.TestCase):
+    """The window under an open box can be destroyed while the box waits (closed under it, the app quitting); Qt then
+    deletes the box with it. The static helpers must return quietly: an exception there runs inside a Qt slot and
+    ends the whole process (seen as a late "could not open" box on a window that was already closed)."""
+
+    def setUp(self) -> None:
+        MessageBox.set_test_hook(None)
+
+    def _parent_destroyed_while_open(self, call):
+        from PyQt6 import sip
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication, QWidget
+
+        parent = QWidget()
+        parent.show()
+        QTimer.singleShot(60, lambda: sip.delete(parent))
+        # safety: never leave a modal box waiting if the parent somehow survived
+        QTimer.singleShot(4000, lambda: [w.done(0) for w in QApplication.topLevelWidgets()
+                                         if isinstance(w, MessageBox) and not sip.isdeleted(w) and w.isVisible()])
+        result = call(parent)
+        self.assertTrue(sip.isdeleted(parent))
+        return result
+
+    def test_warning_returns_no_button(self) -> None:
+        r = self._parent_destroyed_while_open(lambda p: MessageBox.warning(p, "T", "x"))
+        self.assertEqual(r, MessageBox.StandardButton.NoButton)
+
+    def test_question_is_not_taken_as_yes(self) -> None:
+        r = self._parent_destroyed_while_open(lambda p: MessageBox.question(p, "T", "x"))
+        self.assertEqual(r, MessageBox.StandardButton.NoButton)
+
+    def test_about_returns_quietly(self) -> None:
+        self.assertIsNone(self._parent_destroyed_while_open(lambda p: MessageBox.about(p, "T", "x")))
+
+
 if __name__ == "__main__":
     unittest.main()

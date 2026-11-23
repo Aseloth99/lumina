@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from PyQt6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
-from PyQt6.QtGui import QGuiApplication, QRegion
+from PyQt6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QTimer
+from PyQt6.QtGui import QGuiApplication, QPainterPath, QRegion
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -62,6 +62,8 @@ _INTERACTIVE_NAMES = {
 # Ekran yapılandırması değişince (RDP ile bağlanma, çözünürlük/ölçek değişimi, monitör tak-çıkar) pencere bu kadar
 # sessizlikten sonra yeni ekrana yeniden oturtulur: RDP art arda birkaç olay yayar, sonuncusundan sonra bir kez çalışılır.
 SCREEN_REFIT_MS = 250
+# Windows 10 köşe maskesinin yarıçapı (mantıksal px; MediaCompressor ana penceresiyle aynı)
+ROUND_RADIUS = 12.0
 # Hedef geometriyle aradaki bu kadarlık fark (mantıksal px) "zaten oturuyor" sayılır: yuvarlama/çerçeve payı
 # yüzünden pencere hiç durulmayan bir yeniden oturtma döngüsüne girmesin.
 _FIT_TOLERANCE = 2
@@ -155,12 +157,14 @@ class FramelessWindow(QMainWindow):
             self._max_by_dblclick = False
         if event.type() != QEvent.Type.WindowStateChange or self.isMinimized():
             return
+        self._apply_round_mask()
         normal = not (self.isFullScreen() or self.isMaximized())
         if self._refit_deferred or (self._restore_check and normal):
             self._screen_refit_timer.start()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._apply_round_mask()
         # Ölçek değişince (WM_DPICHANGED) Windows tam ekran pencereyi eski mantıksal boyutunda bırakır: ekranın bir
         # köşesine küçülür. Ekran sinyali gelmese de yakala.
         if self.isFullScreen() and self._screens_hooked:
@@ -294,6 +298,30 @@ class FramelessWindow(QMainWindow):
             )
         except Exception:
             pass
+
+    @staticmethod
+    def needs_mask_rounding() -> bool:
+        """Windows 10'da DWM köşe yuvarlamıyor (DWMWA_WINDOW_CORNER_PREFERENCE yalnızca Windows 11, yapı 22000+)."""
+        if sys.platform != "win32":
+            return False
+        try:
+            return sys.getwindowsversion().build < 22000
+        except AttributeError:
+            return False
+
+    def _apply_round_mask(self) -> None:
+        """Windows 10: pencere köşeleri maskeyle yuvarlanır (MediaCompressor/FlexiKey/TransferTCP gibi). Saydam pencere
+        kullanılamaz: mpv videoyu yerel bir alt pencereye çizer. Büyütülmüş/tam ekranda maske kalkar."""
+        if not self.needs_mask_rounding():
+            return
+        if self.isMaximized() or self.isFullScreen():
+            self.clearMask()
+            return
+        if self.width() < 2 * ROUND_RADIUS or self.height() < 2 * ROUND_RADIUS:
+            return
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), ROUND_RADIUS, ROUND_RADIUS)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     def _enable_windows_snap(self) -> None:
         """Windows Aero Snap desteğini aktif et (WS_THICKFRAME + WS_MAXIMIZEBOX)."""

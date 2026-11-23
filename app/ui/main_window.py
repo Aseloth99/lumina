@@ -1001,7 +1001,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         ink = self._toolbar_ink()
         self.btn_frame_back.setIcon(frame_step_icon(False, ink))
         self.btn_frame_fwd.setIcon(frame_step_icon(True, ink))
-        self.btn_loop.setIcon(loop_icon(ink))
+        self._bind_toggle_icon(self.btn_loop, loop_icon)
         self.btn_tracks.setIcon(tracks_icon(ink))
         self.btn_tracks.setToolTip(f"{self.t('tracks')} (V / B)")
         self.btn_frame_back.setToolTip(f"{self.t('frame_back')} (, / Ctrl+←)")
@@ -1033,6 +1033,15 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
     def _toolbar_ink(self) -> QColor:
         return QColor(theme_mod.palette(self._resolved_theme(), self.accent)["ink"])
 
+    def _toggle_ink(self, btn: QPushButton) -> QColor:
+        palette = theme_mod.palette(self._resolved_theme(), self.accent)
+        return QColor(palette["active_ink"] if btn.property("active") == "true" else palette["ink"])
+
+    def _bind_toggle_icon(self, btn: QPushButton, factory) -> None:
+        """Açık/kapalı düğme: kapalıyken tek renk, açıkken vurgu renginde simge; her polish'te yeniden boyanır."""
+        btn._on_polish = lambda: btn.setIcon(factory(self._toggle_ink(btn)))
+        btn._on_polish()
+
     def _refresh_icons(self) -> None:
         ink = self._toolbar_ink()
         self.btn_prev.setIcon(arrow_icon(True, ink))
@@ -1042,19 +1051,19 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         self.btn_rot_right.setIcon(rotate_icon(True, ink))
         self.btn_zoom_out.setIcon(zoom_icon(False, ink))
         self.btn_zoom_in.setIcon(zoom_icon(True, ink))
-        self.btn_full.setIcon(fullscreen_icon(ink))
+        self._bind_toggle_icon(self.btn_full, fullscreen_icon)
         fs_key = "exit_fullscreen" if self.isFullScreen() else "fullscreen"
         self.btn_full.setToolTip(f"{self.t(fs_key)} (F11)")
         self.btn_full.setProperty("active", "true" if self.isFullScreen() else "false")
         _polish(self.btn_full)
-        self.btn_info.setIcon(info_icon(ink))
+        self._bind_toggle_icon(self.btn_info, info_icon)
         self.btn_trash.setIcon(trash_icon(ink))
         if hasattr(self, "btn_folder"):
             self.btn_folder.setIcon(folder_icon(ink))
         self._refresh_audio_control()
         self._refresh_strip_icon()
         self.btn_settings.setIcon(more_icon(ink))
-        self.btn_gallery.setIcon(gallery_icon(ink))
+        self._bind_toggle_icon(self.btn_gallery, gallery_icon)
         self.btn_min.setIcon(minimize_icon(ink))
         self._refresh_max_icon()
         self._apply_update_button()
@@ -1350,6 +1359,8 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         if self.gallery is not None:
             self.gallery.set_palette(pal)
         self.details.apply_chrome(resolved == "dark")
+        if hasattr(self, "empty"):
+            self.empty.refresh_style()  # boş ekran yıldızı vurgu rengini alır (yalnızca kurulurken boyanıyordu)
         self._refresh_icons()
         self._refresh_mode_buttons()
 

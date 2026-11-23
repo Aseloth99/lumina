@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from typing import Callable
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QLocale, QPointF, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
@@ -1422,6 +1423,10 @@ class MessageBox(_ChromeDialog):
         if default is not None and default != StandardButton.NoButton:
             box.setDefaultButton(default)
         box.exec()
+        # The window under the box can be destroyed while it waits (closed under it, the app quitting): Qt deletes the
+        # box with it. Touching it then raises inside a Qt slot, which ends the whole process; nothing was chosen.
+        if sip.isdeleted(box):
+            return StandardButton.NoButton
         result = box.result_button()
         box.deleteLater()
         return result
@@ -1460,7 +1465,8 @@ class MessageBox(_ChromeDialog):
         box.setText(text)
         box.setStandardButtons(StandardButton.Ok)
         box.exec()
-        box.deleteLater()
+        if not sip.isdeleted(box):  # its window may be gone already (see _show)
+            box.deleteLater()
 
 
 # ---------------------------------------------------------------------------------------------------------------

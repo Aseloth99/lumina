@@ -241,7 +241,9 @@ def main(argv: list[str] | None = None) -> int:
         system_default=QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family(),
     )
     font = QFont(font_family, 10)
-    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    # Dikey hinting (MediaCompressor ile aynı): tam hinting %150 ölçekte harf aralıklarını tam piksele yuvarlayıp dalgalandırıyordu
+    font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     app.setFont(font)
 
     initial = update_boot.launch_path(argv)

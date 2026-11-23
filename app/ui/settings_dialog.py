@@ -41,8 +41,8 @@ from app.ui.icons import (
     apps_icon,
     folder_icon,
     language_flag_icon,
+    menu_icon,
     play_icon,
-    settings_icon,
     shell_icon,
     theme_dark_icon,
     theme_light_icon,
@@ -243,7 +243,7 @@ class SettingsDialog(ChromeDialog):
         layout.addWidget(self.card_accent)
 
         # Otomatik Oynatma Kartı
-        self.card_auto = self._create_card(self._t("autoplay"), self._t("settings_autoplay_desc"))
+        self.card_auto = self._create_card(self._t("playback_card"), self._t("settings_autoplay_desc"))
         self.chk_autoplay = QCheckBox(self._t("autoplay"), self.card_auto)
         self.chk_autoplay.setObjectName("card_checkbox")
         self.chk_autoplay.setChecked(self.main_win._autoplay_enabled())
@@ -371,7 +371,7 @@ class SettingsDialog(ChromeDialog):
             self._refresh_accent_dots()
 
         if hasattr(self, "card_auto"):
-            self.card_auto.lbl_title.setText(self._t("autoplay"))
+            self.card_auto.lbl_title.setText(self._t("playback_card"))
             if self.card_auto.lbl_sub:
                 self.card_auto.lbl_sub.setText(self._t("settings_autoplay_desc"))
             self.chk_autoplay.setText(self._t("autoplay"))
@@ -718,9 +718,10 @@ class SettingsDialog(ChromeDialog):
         ink = QColor(pal["ink"])
         self.body_host.setStyleSheet(theme_mod.dialog_stylesheet(self.main_win._resolved_theme(), getattr(self.main_win, "accent", None)))
         if hasattr(self, "nav_buttons") and len(self.nav_buttons) >= 3:
-            self.nav_buttons[0].setIcon(settings_icon(ink))
-            self.nav_buttons[1].setIcon(play_icon(18, ink))
-            self.nav_buttons[2].setIcon(apps_icon(ink))
+            # Sekme simgeleri renkli (⋯ menüsündeki anlamlı renkler); araç çubuğu simgeleri tek renk kalır
+            self.nav_buttons[0].setIcon(menu_icon("settings"))
+            self.nav_buttons[1].setIcon(menu_icon("autoplay"))
+            self.nav_buttons[2].setIcon(menu_icon("info"))
         if hasattr(self, "btn_defaults"):
             self.btn_defaults.setIcon(apps_icon(ink))
         if hasattr(self, "btn_browse"):

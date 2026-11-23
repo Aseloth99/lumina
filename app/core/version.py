@@ -1,6 +1,6 @@
 """Tek sürüm kaynağı — pyproject.toml ile aynı."""
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 
 def get_version() -> str:

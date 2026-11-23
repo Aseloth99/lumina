@@ -1,4 +1,4 @@
-"""İnce cam bar + yuvarlak bağlı nane oynat düğmesi + yan yana film şeridi."""
+"""İnce cam bar + yuvarlak bağlı oynat düğmesi (vurgu renginde) + yan yana film şeridi."""
 
 from __future__ import annotations
 
@@ -132,12 +132,11 @@ class SeekSlider(QSlider):
         painter.setBrush(groove_color)
         painter.drawRoundedRect(groove_rect, groove_h / 2.0, groove_h / 2.0)
 
-        # İlerleme (aktif dolgu - nane yeşili)
+        # İlerleme (aktif dolgu - vurgu rengi)
         active_w = hx - margin
         if active_w > 0:
             active_rect = QRectF(margin, cy - groove_h / 2.0, active_w, groove_h)
-            fill_color = QColor(13, 148, 136, 240) if is_light else QColor(45, 212, 166, 235)
-            painter.setBrush(fill_color)
+            painter.setBrush(_accent_color("accent", 240))
             painter.drawRoundedRect(active_rect, groove_h / 2.0, groove_h / 2.0)
 
         # Tutamaç (pürüzsüz antialiased yuvarlak daire)
@@ -147,7 +146,7 @@ class SeekSlider(QSlider):
         if active:
             # Dış hafif parlama halkası
             halo_r = r + 3.0
-            painter.setBrush(QColor(13, 148, 136, 60) if is_light else QColor(45, 212, 166, 75))
+            painter.setBrush(_accent_color("accent", 60 if is_light else 75))
             painter.drawEllipse(QPointF(hx, cy), halo_r, halo_r)
 
         painter.setPen(QPen(QColor(0, 0, 0, 60) if is_light else QColor(255, 255, 255, 180), 1.0))
@@ -162,8 +161,18 @@ def _accent_hi() -> str:
     return theme.ACCENTS[theme.active_accent()]["hi_dark"]
 
 
+def _accent_color(role: str, alpha: int) -> QColor:
+    """Seçili vurgu renginin bir tonu (accent / accent2 / hi_dark): oynat düğmesi ve ilerleme çubuğu vurguyu izler
+    (eskiden sabit nane yeşiliydi, mor seçilse de yeşil kalıyordu)."""
+    from app.resources import theme
+
+    color = QColor(theme.ACCENTS[theme.active_accent()][role])
+    color.setAlpha(alpha)
+    return color
+
+
 class GlassOrb(QPushButton):
-    """Büyük nane daire, beyaz üçgen / duraklat simgesi, parıltılı cam."""
+    """Büyük vurgu renkli daire, beyaz üçgen / duraklat simgesi, parıltılı cam."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -212,16 +221,16 @@ class GlassOrb(QPushButton):
         if hover:
             halo = QRectF(box).adjusted(-1.5, -1.5, 1.5, 1.5)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(45, 212, 166, 60))
+            painter.setBrush(_accent_color("accent", 60))
             painter.drawEllipse(halo)
 
         if self._loading:
             fill = QColor(_accent_hi())
             fill.setAlpha(240)
         elif playing:
-            fill = QColor(13, 148, 136, 250 if hover else 235)
+            fill = _accent_color("accent2", 250 if hover else 235)
         else:
-            fill = QColor(45, 212, 166, 255 if hover else 245)
+            fill = _accent_color("accent", 255 if hover else 245)
 
         painter.setPen(QPen(QColor(255, 255, 255, 90 if hover else 50), 1.4))
         painter.setBrush(fill)

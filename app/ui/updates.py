@@ -17,11 +17,12 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from functools import partial
 from typing import Optional
 
-from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QApplication
 
@@ -45,6 +46,10 @@ from app.ui.update_dialog import UpdateDialog
 _log = logging.getLogger(__name__)
 
 READY_KEY = "update_ready"  # QSettings: hazır paketin kalıcı kaydı (JSON)
+# Son pencere kapanınca yarım kalan sessiz güncelleme için penceresiz bekleme sınırları
+LINGER_CHECK_MS = 20_000  # sürmekte olan denetim (istek zaman aşımı 10 sn)
+LINGER_DOWNLOAD_MS = 300_000  # sürmekte olan indirme (~147 MB; 8 MB/sn'de ~20 sn, yavaş bağlantıya pay)
+LINGER_POLL_SECONDS = 0.05
 
 
 class _DownloadThread(QObject):
@@ -172,6 +177,10 @@ class UpdateService(QObject):
 
     def shutdown(self) -> None:
         self.checker.stop()
+        try:
+            self._finish_in_background()
+        except Exception:  # noqa: BLE001 — kapanışı asla bozma
+            _log.exception("güncelleme arka planda bitirilemedi")
         worker = getattr(self.checker, "_worker", None)
         if worker is not None and worker.isRunning():
             worker.wait(2000)
@@ -183,6 +192,44 @@ class UpdateService(QObject):
             self.install_on_exit()
         finally:
             self._download_lock.release()
+
+    def _silent_download_running(self) -> bool:
+        return self._thread is not None and self._thread.isRunning() and bool((self._job or {}).get("silent"))
+
+    def _finish_in_background(self) -> None:
+        """Son pencere kapandı ama sessiz güncelleme yarımda: süreç PENCERESİZ (tepsi simgesi de kalkar) indirmeyi bitirir,
+        sonra çıkışta kurar. Lumina kısa açılıp kapanan bir görüntüleyici; eskiden ~20 sn'lik indirme her kapanışta iptal olup
+        sonraki açılışta sıfırdan başlıyordu, güncelleme hiç kurulmuyordu. Yalnızca Qt'nin kuyruktaki sinyalleri işlenir
+        (pencere/zamanlayıcı olayları değil); denetim için en çok LINGER_CHECK_MS, indirme için LINGER_DOWNLOAD_MS beklenir."""
+        if not self._silent_allowed(bool((self._pending or {}).get("mandatory"))):
+            return
+        worker = getattr(self.checker, "_worker", None)
+        if not ((worker is not None and worker.isRunning()) or self._silent_download_running()):
+            return
+        _log.info("Güncelleme arka planda tamamlanıyor (pencere kapalı)")
+        tray = getattr(QApplication.instance(), "_lumina_tray", None)
+        if tray is not None:
+            try:
+                tray.shutdown()  # simge hemen kalksın; sahiplik bırakılır, yeni açılan Lumina tepsiyi alır
+            except Exception:  # noqa: BLE001
+                pass
+        start = time.monotonic()
+        while True:
+            QCoreApplication.sendPostedEvents()  # denetim sonucu → sessiz indirme başlar; indirme bitti → hazır paket
+            elapsed_ms = (time.monotonic() - start) * 1000
+            worker = getattr(self.checker, "_worker", None)
+            if worker is not None and worker.isRunning() and elapsed_ms < LINGER_CHECK_MS:
+                time.sleep(LINGER_POLL_SECONDS)
+                continue
+            if self._silent_download_running() and elapsed_ms < LINGER_DOWNLOAD_MS:
+                time.sleep(LINGER_POLL_SECONDS)
+                continue
+            break
+        if self._silent_download_running():
+            return  # süre doldu: shutdown indirmeyi iptal eder, damga atılmaz (sonraki açılış yeniden dener)
+        if self._thread is not None:
+            self._thread.wait(2000)  # iş parçacığı bitti; bitiş sinyalleri kuyruğa girsin
+        QCoreApplication.sendPostedEvents()
 
     # ------------------------------------------------------------------ otomatik kurulum
     @staticmethod

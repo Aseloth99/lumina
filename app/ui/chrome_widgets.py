@@ -25,6 +25,9 @@ from app.ui.drops import FileDropMixin
 def polish(widget: QWidget) -> None:
     widget.style().unpolish(widget)
     widget.style().polish(widget)
+    hook = getattr(widget, "_on_polish", None)  # ör. açık/kapalı düğmenin simgesini vurgu rengine boyar
+    if callable(hook):
+        hook()
     widget.update()
 
 

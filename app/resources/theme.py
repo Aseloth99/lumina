@@ -34,6 +34,8 @@ DARK: dict[str, str] = {
     "text": "#e8e8e8", "text_muted": "#9e9e9e", "ink": "#e0e0e0", "ink2": "#d0d0d0",
     "danger": "#d32f2f", "danger_hi": "#f44336", "warn": "#FFC107",
     "stage": "#0f0f0f", "panel": "#202020",
+    # Onay kutusu (dört uygulamada aynı: FlexiKey surface2 / border_strong / surface / border)
+    "chk_fill": "#262626", "chk_border": "#454545", "chk_hover": "#1e1e1e", "chk_dis_border": "#2e2e2e",
 }
 LIGHT: dict[str, str] = {
     "base": "#e0e0e0", "raised": "#f5f5f5", "sunken": "#d8d8d8", "surface": "#ececec", "border": "#c5c5c5",
@@ -41,6 +43,7 @@ LIGHT: dict[str, str] = {
     "text": "#1a1a1a", "text_muted": "#616161", "ink": "#2a2a2a", "ink2": "#333333",
     "danger": "#e53935", "danger_hi": "#ff5252", "warn": "#8A5300",
     "stage": "#ececec", "panel": "#f5f5f5",
+    "chk_fill": "#ececec", "chk_border": "#b0b0b0", "chk_hover": "#f5f5f5", "chk_dis_border": "#c5c5c5",
 }
 
 _STATE: dict = {"theme": None, "accent": DEFAULT_ACCENT}
@@ -141,6 +144,9 @@ def palette(theme: str, accent: str | None = None) -> dict:
     p["accent_text"] = readable(spec["hi_dark"] if dark else spec["accent2"], worst_bg)
     p["muted"] = p["text_muted"]
     p["link"] = p["accent_text"]
+    # Açık (active="true") araç düğmesinin simgesi: vurgu renginde, vurgulu zemininde en az 3:1
+    active_under = mix(p["raised"], spec["accent"], 0.35) if dark else mix("#ffffff", spec["accent2"], 0.22)
+    p["active_ink"] = readable(spec["hi_dark"] if dark else p["accent_text"], active_under, 3.0)
     return p
 
 
@@ -213,6 +219,63 @@ def combo_arrow_path(color: str) -> str:
                 except OSError:
                     pass
     return path.replace("\\", "/")
+
+
+def checkmark_path(color: str, scale: int = 4) -> str:
+    """Onay kutusu tiki (dört uygulamada aynı çizim): 16x16 kutu, (3,8)-(6,11)-(13,4), 2,2 px yuvarlak uçlu kalem.
+
+    4x çizilir: stil sayfasının `image:` görseli kutuya ekranın ölçeğinde küçültülür (%150 ekranda 16 px görsel
+    büyütülüp bulanıklaşıyordu). Geçici klasörde bir kez üretilir.
+    """
+    import os
+    import tempfile
+
+    name = f"lumina_check_{color.lstrip('#').lower()}_x{scale}.png"
+    path = os.path.join(tempfile.gettempdir(), name)
+    if not os.path.isfile(path):
+        from PyQt6.QtCore import QPointF, Qt
+        from PyQt6.QtGui import QColor, QImage, QPainter, QPen
+
+        img = QImage(16 * scale, 16 * scale, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(color), 2.2 * scale)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPolyline([QPointF(3 * scale, 8 * scale), QPointF(6 * scale, 11 * scale), QPointF(13 * scale, 4 * scale)])
+        painter.end()
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            if img.save(tmp, "PNG"):
+                os.replace(tmp, path)
+        except OSError:
+            pass
+    return path.replace("\\", "/")
+
+
+def checkbox_qss(selector: str, p: dict) -> str:
+    """Onay kutusu (FlexiKey, MediaCompressor, TransferTCP ile aynı): 18 px, 5 px köşe, işaretliyken vurgu dolgu + beyaz tik."""
+    return f"""
+        {selector} {{ spacing: 10px; color: {p['text']}; background: transparent; }}
+        {selector}:disabled {{ color: {p['text_muted']}; }}
+        {selector}::indicator {{
+            width: 18px; height: 18px; border-radius: 5px;
+            background-color: {p['chk_fill']}; border: 1px solid {p['chk_border']};
+        }}
+        {selector}::indicator:unchecked:hover {{ background-color: {p['chk_hover']}; border-color: {p['accent']}; }}
+        {selector}::indicator:checked {{
+            background-color: {p['accent2']}; border-color: {p['accent2']};
+            image: url("{checkmark_path('#ffffff')}");
+        }}
+        {selector}::indicator:checked:hover {{ background-color: {p['accent']}; border-color: {p['accent']}; }}
+        {selector}::indicator:unchecked:disabled {{ background-color: transparent; border-color: {p['chk_dis_border']}; }}
+        {selector}::indicator:checked:disabled {{
+            background-color: {p['chk_border']}; border-color: {p['chk_border']};
+            image: url("{checkmark_path(p['text_muted'])}");
+        }}
+    """
 
 
 def combo_arrow_qss(selector: str, color: str) -> str:
@@ -629,6 +692,9 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
     btn2_bg = p["hi2"] if dark else p["surface"]
     btn2_hover = p["hi"] if dark else p["hi"]
     edge = p["border"] if dark else p["border"]
+    # Seçili sekme (dört uygulamada aynı): vurgu tonlu hafif zemin + vurgu renginde yazı + solda 3 px vurgu çizgisi
+    nav_tint = mix(p["surface"], p["accent"], 0.16 if dark else 0.13)
+    nav_ink = readable(p["accent_hi"] if dark else p["accent2"], nav_tint, 4.5)
     return f"""
         QStackedWidget#stack, QWidget#page {{ background: transparent; }}
         QLabel {{ color: {p['text']}; background: transparent; }}
@@ -641,12 +707,13 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
         }}
         QPushButton#nav_btn {{
             text-align: left;
-            padding-left: 10px;
+            padding-left: 7px;
             color: {p['text_muted']};
             font-size: 13px;
             font-weight: 500;
             background: transparent;
             border: none;
+            border-left: 3px solid transparent;
             border-radius: 6px;
         }}
         QPushButton#nav_btn:hover {{
@@ -654,8 +721,9 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
             color: {p['text']};
         }}
         QPushButton#nav_btn:checked {{
-            background-color: {p['fill']};
-            color: {p['on_fill']};
+            background-color: {nav_tint};
+            color: {nav_ink};
+            border-left: 3px solid {p['accent']};
             font-weight: 700;
         }}
         QFrame#setting_card {{
@@ -685,13 +753,8 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
             border: 1px solid {edge};
             border-radius: 6px;
         }}
-        QCheckBox#card_checkbox {{
-            color: {p['text']};
-            font-size: 12px;
-            font-weight: 500;
-            spacing: 8px;
-        }}
-        QCheckBox#card_checkbox:disabled {{ color: {p['text_muted']}; }}
+        {checkbox_qss("QCheckBox#card_checkbox", p)}
+        QCheckBox#card_checkbox {{ font-size: 12px; font-weight: 500; }}
         QLineEdit#txt_folder {{
             background-color: {p['sunken']};
             border: 1px solid {edge};

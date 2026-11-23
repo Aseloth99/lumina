@@ -301,17 +301,68 @@ class FlowTest(unittest.TestCase):
         self.assertTrue(service.installer.swapped)
         self.assertIsNone(service._ready)
 
-    def test_closing_during_a_silent_download_leaves_no_stamp_and_nothing_installed(self):
+    def test_closing_during_a_silent_download_finishes_it_windowless_and_installs(self):
+        # Gerçek kullanım: fotoğraf açılır, birkaç saniyede kapanır. Eskiden ~20 sn'lik indirme her kapanışta iptal olur,
+        # sonraki açılışta sıfırdan başlardı: güncelleme hiç kurulmuyordu.
         _Handler.slow = True
         service = self.service(auto=True)
         self.offer(service)
         self.assertTrue(pump(lambda: service._thread is not None and service._thread.isRunning()))
         time.sleep(0.2)
+        tray = mock.Mock()
+        with mock.patch.object(self.app, "_lumina_tray", tray, create=True):
+            service.shutdown()  # son pencere kapandı
+        tray.shutdown.assert_called_once()  # bekleme sırasında tepside hayalet simge kalmaz
+        self.assertEqual(self.read(self.exe), NEW_EXE, "indirme bitti ve çıkışta kuruldu")
+        self.assertEqual(self.listing(), ["Lumina.exe", "Lumina.exe.old"])
+        self.assertFalse(self.spawn.called, "yeniden başlatma yok")
+        self.assertEqual(_Handler.hits, 1, "paket bir kez indirildi")
+
+    def test_closing_while_the_check_is_running_waits_for_it_then_downloads_and_installs(self):
+        service = self.service(auto=True)
+
+        class _Worker:  # yanıtı henüz gelmemiş denetim isteği
+            running = True
+
+            def isRunning(self):  # noqa: N802
+                return self.running
+
+            def wait(self, *_a):
+                return True
+
+        worker = service.checker._worker = _Worker()
+
+        def answer():
+            time.sleep(0.3)
+            service.checker.update_available.emit(NEWER, self.url, "", False, len(ZIP), SHA)  # başka iş parçacığından
+            worker.running = False
+
+        threading.Thread(target=answer, daemon=True).start()
         service.shutdown()
+        self.assertEqual(self.read(self.exe), NEW_EXE)
+
+    def test_a_download_that_outlives_the_wait_limit_is_dropped_without_a_stamp(self):
+        _Handler.slow = True
+        service = self.service(auto=True)
+        self.offer(service)
+        self.assertTrue(pump(lambda: service._thread is not None and service._thread.isRunning()))
+        with mock.patch("app.ui.updates.LINGER_DOWNLOAD_MS", 100):
+            service.shutdown()
         self.assertEqual(self.read(self.exe), self.old)
-        self.assertIsNone(self._stamp(), "yarıda kalan indirme yüzünden 24 saat denetimsiz kalınmaz")
+        self.assertIsNone(self._stamp(), "yarıda kalan indirme yüzünden denetimsiz kalınmaz")
         self.assertFalse(os.path.exists(ui.package_path()))
         self.assertEqual(self.listing(), ["Lumina.exe"])
+
+    def test_a_manual_session_without_auto_install_does_not_linger(self):
+        _Handler.slow = True
+        service = self.service(auto=False)
+        self.offer(service)
+        service._begin_download(silent=False)
+        self.assertTrue(pump(lambda: service._thread is not None and service._thread.isRunning()))
+        started = time.monotonic()
+        service.shutdown()
+        self.assertLess(time.monotonic() - started, 3.0, "otomatik kurulum kapalıyken kapanış beklemez")
+        self.assertEqual(self.read(self.exe), self.old)
 
     def test_a_package_downloaded_in_an_earlier_session_is_installed_by_the_next_one(self):
         first = self.service(auto=True)
