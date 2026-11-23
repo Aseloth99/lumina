@@ -506,6 +506,15 @@ class TestHookTests(Base):
 
 
 class InputDialogTests(Base):
+    def _safety_close(self) -> None:
+        """Closes a dialog still open after 5 s. The timer stops when the test ends: left running, it closed a later
+        test's box (on a slow machine ParentGoneWhileOpenTest's box shut before its parent went away)."""
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: (QApplication.activeModalWidget() or QWidget()).close())
+        timer.start(5000)
+        self.addCleanup(timer.stop)
+
     def test_hook_results_for_all_getters(self) -> None:
         MessageBox.set_test_hook(lambda d: ("Yeni Ad", True))
         self.assertEqual(InputDialog.getText(None, "T", "Ad", text="Eski"), ("Yeni Ad", True))
@@ -572,12 +581,12 @@ class InputDialogTests(Base):
             QTest.keyClick(dlg, Qt.Key.Key_Return)
 
         QTimer.singleShot(0, act)
-        QTimer.singleShot(5000, lambda: (QApplication.activeModalWidget() or QWidget()).close())
+        self._safety_close()
         self.assertEqual(InputDialog.getText(None, "Cihaz", "Ad", text="eski"), ("Ofis PC", True))
 
     def test_real_exec_escape_and_cancel_button(self) -> None:
         QTimer.singleShot(0, lambda: QTest.keyClick(QApplication.activeModalWidget(), Qt.Key.Key_Escape))
-        QTimer.singleShot(5000, lambda: (QApplication.activeModalWidget() or QWidget()).close())
+        self._safety_close()
         self.assertEqual(InputDialog.getText(None, "Cihaz", "Ad", text="eski"), ("", False))
         QTimer.singleShot(0, lambda: QApplication.activeModalWidget().button(SB.Cancel).click())
         self.assertEqual(InputDialog.getInt(None, "T", "Sayı", 3, 0, 9), (3, False))
@@ -589,7 +598,7 @@ class InputDialogTests(Base):
             QTest.keyClick(dlg, Qt.Key.Key_Return)
 
         QTimer.singleShot(0, act)
-        QTimer.singleShot(5000, lambda: (QApplication.activeModalWidget() or QWidget()).close())
+        self._safety_close()
         self.assertEqual(InputDialog.getInt(None, "T", "px", 1920, 240, 7680, 10), (2500, True))
 
     def test_get_item_editable_flag(self) -> None:

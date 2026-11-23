@@ -106,7 +106,7 @@ class DialogTest(unittest.TestCase):
         dialog.update_btn.click()  # kilitli düğme: sinyal yok
         self.assertEqual(self.events, ["accepted"])
         dialog.update_download_progress(1024 * 1024, 4 * 1024 * 1024, 2.5)
-        self.assertIn("25%", dialog.progress_label.text())
+        self.assertIn("(%25)", dialog.progress_label.text())
         self.assertIn("2.50 MB/s", dialog.progress_label.text())
         self.assertEqual(dialog.progress_bar.value(), 25)
         dialog.update_download_progress(512, 0, 0.0)  # toplam bilinmiyor: belirsiz çubuk
@@ -122,7 +122,16 @@ class DialogTest(unittest.TestCase):
     def test_progress_handles_sizes_beyond_32_bits(self):
         dialog = self.make()
         dialog.update_download_progress(5 * 1024**3, 6 * 1024**3, 1.0)
-        self.assertIn("83%", dialog.progress_label.text())
+        self.assertIn("(%83)", dialog.progress_label.text())
+
+    def test_percent_is_written_the_way_the_language_writes_it(self):
+        # the bar and the line under it alike (the line used to say "41%" under a bar saying "%41")
+        for lang, line, bar in (("tr", "(%41)", "%41"), ("en", "(41%)", "41%")):
+            dialog = self.make(lang=lang)
+            dialog.update_download_progress(41 * 1024 * 1024, 100 * 1024 * 1024, 0.0)
+            dialog.progress_bar.finish_animation()
+            self.assertIn(line, dialog.progress_label.text())
+            self.assertEqual(dialog.progress_bar.text(), bar)
 
     def test_error_is_inline_keeps_the_window_open_and_retry_works(self):
         dialog = self.shown(self.make())

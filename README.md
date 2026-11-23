@@ -128,6 +128,8 @@ matches a photo so that the pair shares a name. It only renames videos and never
 A ready-to-run `Lumina.exe` is available from **https://macik.com.tr**. It needs no installation and bundles the video decoder
 and image codecs.
 
+Each [GitHub release](https://github.com/Aseloth99/lumina/releases/latest) also carries an exe built from this repository's source at that version's tag. It takes its updates from the same channel as the official build.
+
 ### From source
 
 Requirements: Windows 10 or later, Python 3.12+, and a libmpv build (see below).

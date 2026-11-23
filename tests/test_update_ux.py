@@ -976,7 +976,7 @@ class ManualFlowTest(_Base):
         self.assertFalse(service._job["silent"], "arka plandaki indirmeye katıldı")
         service._begin_download.assert_not_called()
         service._on_progress(1024, 4096, 1.5)
-        self.assertIn("25%", dialog.progress_label.text())
+        self.assertIn("(%25)", dialog.progress_label.text())
 
     def test_verified_download_installs_with_the_open_photo_and_then_quits_cleanly(self):
         service = self._service()

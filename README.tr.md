@@ -126,6 +126,8 @@ eşleşen videoları, çift aynı adı taşısın diye yeniden adlandırır. Yal
 
 Çalıştırmaya hazır `Lumina.exe`, **https://macik.com.tr** adresinde. Kurulum gerektirmez; video çözücüyü ve görüntü kodeklerini içerir.
 
+Her [GitHub sürümünde](https://github.com/Aseloth99/lumina/releases/latest) o sürümün etiketindeki kaynaktan derlenmiş bir exe de bulunur. Güncellemelerini resmî sürümle aynı kanaldan alır.
+
 ### Kaynaktan
 
 Gereksinimler: Windows 10 ya da üstü, Python 3.12+ ve bir libmpv derlemesi (aşağıya bakın).

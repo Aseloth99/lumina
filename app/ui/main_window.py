@@ -1121,7 +1121,7 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
         muted = self.player.muted
         self.btn_audio.setIcon(volume_icon(muted, ink))
         tt = self.t("unmute" if muted else "mute")
-        self.btn_audio.setToolTip(f"{tt} (M · ↑ / ↓) · {self.player.volume}%")
+        self.btn_audio.setToolTip(f"{tt} (M · ↑ / ↓) · {self.t('pct').format(self.player.volume)}")
         self.btn_audio.setProperty("muted", "true" if muted else "false")
         _polish(self.btn_audio)
         popup = getattr(self, "volume_popup", None)

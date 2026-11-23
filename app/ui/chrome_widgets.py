@@ -525,7 +525,7 @@ class VolumePopup(QFrame):
         self.slider.blockSignals(True)
         self.slider.setValue(val)
         self.slider.blockSignals(False)
-        self.label.setText(f"{val}%")
+        self.label.setText(t("pct").format(val))
         self._update_icon(val)
 
     def _update_icon(self, val: int) -> None:
@@ -548,7 +548,7 @@ class VolumePopup(QFrame):
         super().mousePressEvent(event)
 
     def _on_slider_changed(self, val: int) -> None:
-        self.label.setText(f"{val}%")
+        self.label.setText(t("pct").format(val))
         self._update_icon(val)
         self.volume_changed.emit(val)
 
