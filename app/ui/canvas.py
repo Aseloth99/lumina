@@ -188,6 +188,15 @@ class PhotoCanvas(FileDropMixin, QGraphicsView):
         # Raster QPixmap'in toImage()'i veriyi kopyalamaz (paylaşır); işçi yalnızca okur.
         self._lod_pool.start(_LodJob(self._lod_gen, pix.toImage(), size, scale, dpr, self._lod_signals))
 
+    def shutdown(self) -> None:
+        """Kapanışta iş havuzlarını boşaltır. Tuval Python tarafında silinirse (GIL tutulurken) ~QThreadPool süren işi
+        bekler, Python'daki iş de GIL'i bekler: süreç kilitlenir (testlerde ölçüldü: 6 koşunun 5'i). Boş havuz hemen kapanır."""
+        self._lod_timer.stop()
+        self._lod_gen += 1  # uçuştaki sonuç atılır
+        self._svg.shutdown()
+        self._lod_pool.clear()
+        self._lod_pool.waitForDone(5000)
+
     def _on_lod_ready(self, result) -> None:
         gen, image, scale, dpr = result
         self._lod_busy = False

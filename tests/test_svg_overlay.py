@@ -688,6 +688,7 @@ class _CanvasBase(unittest.TestCase):
         layout.addWidget(self.canvas)
         self.host.resize(600, 400)
         self.host.show()
+        self.addCleanup(self.canvas.shutdown)  # test nesnesi bırakılınca tuval GIL tutularak silinir: havuz boş olmalı
         self.addCleanup(self.host.close)
         pump(50)
 
@@ -993,6 +994,10 @@ class GenerationCancellationTest(_CanvasBase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def wait_pending(self, count: int) -> None:
+        """Durulma zamanlayıcısı yük altında geç tetiklenebilir: istek gönderilene dek bekle (en çok 5 sn)."""
+        wait_for(lambda: len(self.fake.pending) >= count, 5.0)
+
     def answer(self, index: int, size=(200.0, 100.0)) -> None:
         request, callback = self.fake.pending[index]
         w, h = request["px"]
@@ -1003,11 +1008,13 @@ class GenerationCancellationTest(_CanvasBase):
         self.show_svg("markers", long_side=1600)
         self.zoom_to(6)
         pump(SETTLE_PAD)
+        self.wait_pending(1)
         self.assertEqual(len(self.fake.pending), 1)
         self.zoom_to(12)  # ilk çizim sürerken yeni yakınlaştırma
         pump(SETTLE_PAD)
         self.zoom_to(16)
         pump(SETTLE_PAD)
+        wait_for(lambda: self.canvas._svg._queued is not None, 5.0)
         self.assertEqual(len(self.fake.pending), 1, "çizim sürerken yeni istek GÖNDERİLMEZ, yalnız en yenisi bekletilir")
         self.assertIsNotNone(self.canvas._svg._queued)
         self.answer(0)  # eski sonuç gelir: atılır
@@ -1015,12 +1022,13 @@ class GenerationCancellationTest(_CanvasBase):
         self.assertEqual(len(self.fake.pending), 2, "bekleyen en yeni istek şimdi gönderilir")
         self.assertAlmostEqual(self.fake.pending[1][0]["px"][0] / self.canvas.image_size()[0], 1, delta=3)
         self.answer(1)
-        self.assertTrue(self.canvas.pixmap_item.has_overlay())
+        self.assertTrue(wait_for(self.canvas.pixmap_item.has_overlay, 5.0), "yük altında uygulanması gecikebilir")
 
     def test_result_after_the_file_changed_is_ignored(self) -> None:
         self.show_svg("markers", long_side=1600)
         self.zoom_to(6)
         pump(SETTLE_PAD)
+        self.wait_pending(1)
         image = QImage(50, 50, QImage.Format.Format_RGB32)
         image.fill(QColor("black"))
         self.canvas.set_qimage(image)
@@ -1031,6 +1039,7 @@ class GenerationCancellationTest(_CanvasBase):
         self.show_svg("markers", long_side=1600)  # taban 2:1
         self.zoom_to(6)
         pump(SETTLE_PAD)
+        self.wait_pending(1)
         self.answer(0, size=(100.0, 100.0))  # işçi belgeyi 1:1 sanıyor: hizalanamaz
         self.assertFalse(self.canvas.pixmap_item.has_overlay())
         self.assertTrue(self.canvas._svg._unsupported)
@@ -1039,6 +1048,7 @@ class GenerationCancellationTest(_CanvasBase):
         self.show_svg("markers", long_side=1600)
         self.zoom_to(6)
         pump(SETTLE_PAD)
+        self.wait_pending(1)
         _request, callback = self.fake.pending[0]
         callback({"ok": False, "error": "worker-died"}, b"")
         pump(60)
@@ -1046,6 +1056,7 @@ class GenerationCancellationTest(_CanvasBase):
         self.assertFalse(self.canvas._svg._unsupported)
         self.zoom_to(7)
         pump(SETTLE_PAD)
+        self.wait_pending(2)
         self.assertEqual(len(self.fake.pending), 2, "geçici hata sonrası yeniden denenir")
 
 
@@ -1053,11 +1064,13 @@ class GenerationCancellationTest(_CanvasBase):
         self.show_svg("markers", long_side=1600)
         self.zoom_to(6)
         pump(SETTLE_PAD)
+        self.wait_pending(1)
         self.fake.pending[0][1]({"ok": False, "error": "worker-died"}, b"")
         pump(60)
         self.assertFalse(self.canvas._svg._unsupported)
         self.zoom_to(7)
         pump(SETTLE_PAD)
+        self.wait_pending(2)
         self.fake.pending[1][1]({"ok": False, "error": "worker-died"}, b"")
         pump(60)
         self.assertTrue(self.canvas._svg._unsupported, "iki başarısızlıktan sonra bu belgede bindirme denenmez")
@@ -1071,6 +1084,7 @@ class GenerationCancellationTest(_CanvasBase):
         pump(100)
         self.zoom_to(6)
         pump(SETTLE_PAD)
+        self.wait_pending(1)
         first_px = self.fake.pending[0][0]["px"]
         self.zoom_to(7)  # ilk çizim sürerken görünüm değişti: sonuç bayat olacak
         pump(SETTLE_PAD)
@@ -1078,10 +1092,40 @@ class GenerationCancellationTest(_CanvasBase):
         w, h = request["px"]
         callback({"ok": True, "w": w, "h": h, "mode": "RGB", "n": w * h * 3, "ms": 10000.0, "size": [200.0, 100.0]}, bytes([9]) * (w * h * 3))
         pump(80)
+        self.wait_pending(2)
         self.assertLess(self.canvas._svg._budget, 0.5)
         self.assertEqual(len(self.fake.pending), 2)
         second_px = self.fake.pending[1][0]["px"]
         self.assertLess(second_px[0] * second_px[1], first_px[0] * first_px[1] * 0.8, "bütçe küçüldü: daha az piksel istenir")
+
+
+# --------------------------------------------------------------------------- kapanış: havuzlar boşalır
+class CanvasShutdownTest(_CanvasBase):
+    def test_shutdown_waits_for_running_jobs_and_drops_queued_ones(self) -> None:
+        """Tuval Python tarafında silinirken (GIL tutulurken) ~QThreadPool süren Python işini beklerse süreç kilitlenir;
+        shutdown() bu yüzden havuzları önceden boşaltır (bekleyeni atar, süreni bekler)."""
+        from PyQt6.QtCore import QRunnable
+
+        class Job(QRunnable):
+            def __init__(self, name: str, started, release, ran) -> None:
+                super().__init__()
+                self.name, self.started, self.release, self.ran = name, started, release, ran
+
+            def run(self) -> None:
+                self.started.set()
+                self.release.wait(3)
+                self.ran.append(self.name)
+
+        for label, pool in (("lod", self.canvas._lod_pool), ("svg", self.canvas._svg._pool)):
+            with self.subTest(pool=label):
+                started, release, ran = threading.Event(), threading.Event(), []
+                pool.start(Job("süren", started, release, ran))
+                pool.start(Job("bekleyen", started, release, ran))  # tek iş parçacıklı havuz: sırada kalır
+                self.assertTrue(started.wait(3))
+                threading.Timer(0.3, release.set).start()
+                self.canvas.shutdown()
+                self.assertEqual(pool.activeThreadCount(), 0)
+                self.assertEqual(ran, ["süren"], "süren iş beklenir, sıradaki atılır")
 
 
 # --------------------------------------------------------------------------- arayüz DONMAZ (işçi süreç)

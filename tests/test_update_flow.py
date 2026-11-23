@@ -330,6 +330,9 @@ class FlowTest(unittest.TestCase):
             def wait(self, *_a):
                 return True
 
+            def cancel(self):
+                pass
+
         worker = service.checker._worker = _Worker()
 
         def answer():
@@ -340,6 +343,27 @@ class FlowTest(unittest.TestCase):
         threading.Thread(target=answer, daemon=True).start()
         service.shutdown()
         self.assertEqual(self.read(self.exe), NEW_EXE)
+
+    def test_closing_without_auto_install_drops_a_check_that_waits_to_retry(self):
+        """Sessiz kurulum kapalıyken beklenecek bir şey yok: DNS takıldığı için yeniden denemeyi bekleyen denetim
+        çıkışı uzatmaz (30 sn'lik bekleme hemen biter)."""
+        import socket
+        import urllib.error
+
+        from app.core import updater as upd
+
+        service = self.service(auto=False)
+        dns_error = urllib.error.URLError(socket.gaierror(11001, "getaddrinfo failed"))
+        with mock.patch.object(upd, "RETRY_DELAYS", (30.0,)), \
+             mock.patch.object(upd.urllib.request, "urlopen", side_effect=dns_error):
+            worker = service.checker._worker = upd._UpdateCheckWorker(self.url, None)
+            worker.start()
+            time.sleep(0.3)
+            started = time.monotonic()
+            service.shutdown()
+            self.assertLess(time.monotonic() - started, 1.5, "bekleme kesilmezse wait(2000) dolardı")
+            self.assertTrue(worker.wait(2000))
+        self.assertEqual(self.read(self.exe), self.old)
 
     def test_a_download_that_outlives_the_wait_limit_is_dropped_without_a_stamp(self):
         _Handler.slow = True

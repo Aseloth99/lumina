@@ -4289,6 +4289,10 @@ class MainWindow(MediaActionsMixin, FramelessWindow):
             self.gallery.shutdown()
             self.gallery.provider.shutdown()
         self.player.shutdown()
+        try:
+            self.canvas.shutdown()  # tuvalin iş havuzları boşalsın: pencere silinirken kilitlenme olmasın
+        except Exception:
+            pass
         self._preview.shutdown()  # capture'ı bırak: geçici dosyalar silinebilsin
         self.temps.clear()
         discard_undo(self._undo)

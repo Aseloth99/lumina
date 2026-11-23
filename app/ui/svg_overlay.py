@@ -385,6 +385,12 @@ class SvgOverlayController(QObject):
             except RuntimeError:  # öğenin C++ nesnesi sahneyle birlikte silinmiş olabilir
                 pass
 
+    def shutdown(self) -> None:
+        """Kapanış: bekleyenleri iptal et, süren iş parçacığı çizimini bekle (bkz. PhotoCanvas.shutdown)."""
+        self.detach()
+        self._pool.clear()
+        self._pool.waitForDone(5000)
+
     def schedule(self, *_args) -> None:
         """Görünüm değişti: durulunca yeniden değerlendir."""
         if self._path is not None and self.enabled:

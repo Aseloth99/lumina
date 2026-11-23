@@ -35,6 +35,34 @@ from _synthetic import sample_jpg  # noqa: E402
 SAMPLE = sample_jpg()
 
 
+_EARLIER: set[int] = set()
+
+
+def setUpModule() -> None:
+    from PyQt6 import sip
+
+    if QApplication.instance() is not None:
+        _EARLIER.update(sip.unwrapinstance(w) for w in QApplication.topLevelWidgets())
+
+
+def tearDownModule() -> None:
+    """Bu dosyanın açtığı pencereleri gerçekten yok et. Kapatılmış ama silinmemiş üç ana pencere (ve kaplamaları)
+    çıkışta PyQt'nin rastgele sırayla yok etmesine kalıyordu: testler geçse de süreç ~%20 olasılıkla erişim
+    ihlaliyle bitiyordu. processEvents() ertelenmiş silmeleri işlemez; sendPostedEvents(DeferredDelete) işler."""
+    from PyQt6 import sip
+    from PyQt6.QtCore import QEvent, QThreadPool
+
+    if QApplication.instance() is None:
+        return
+    QThreadPool.globalInstance().waitForDone(5000)
+    for w in QApplication.topLevelWidgets():
+        if sip.unwrapinstance(w) not in _EARLIER:
+            w.close()
+            w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    QCoreApplication.processEvents()
+
+
 def _pump(cond, timeout: float = 8.0) -> bool:
     end = time.monotonic() + timeout
     while time.monotonic() < end:

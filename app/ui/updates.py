@@ -183,6 +183,7 @@ class UpdateService(QObject):
             _log.exception("güncelleme arka planda bitirilemedi")
         worker = getattr(self.checker, "_worker", None)
         if worker is not None and worker.isRunning():
+            self.checker.cancel_check()  # beklenecekse yukarıda beklendi; yeniden deneme beklemesi çıkışı uzatmasın
             worker.wait(2000)
         self.installer.cancel_download()
         if self._thread is not None and self._thread.isRunning():
