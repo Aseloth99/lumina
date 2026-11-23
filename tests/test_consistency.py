@@ -643,6 +643,124 @@ class TextRulesTest(_SettingsCase):
             settings.setValue("lang", old)
 
 
+# ------------------------------------------------------------------------------------------------ ortak görünüm
+def _strict_rule(qss: str, selector: str) -> str:
+    """Seçici kuralın başında durmalı (ör. "QPushButton" araması "QWidget#x QPushButton"a takılmasın)."""
+    match = re.search(r"(?:^|\}|\*/)\s*" + re.escape(selector) + r"\s*\{([^}]*)\}", qss)
+    assert match, selector
+    return " ".join(match.group(1).split())
+
+
+class SharedLookTest(_SettingsCase):
+    """Dört uygulamada aynı görünüm (23 Kasım 2026): düğme köşeleri (normal/vurgulu 10 px, küçük/araç 6 px), 36 px
+    açılır liste ve yol kutusu, aynı chevron oku, MediaCompressor ölçüsünde nötr kaydırma çubuğu, ortak yazı boyları
+    (Lumina px yazar: gövde 13 px = 10 pt, ipucu 12 px = 9 pt, bölüm başlığı 16 px = 12 pt)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        from app.ui.main_window import MainWindow
+
+        cls.win = MainWindow()
+        cls.win.show()
+        pump(40)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.win.close()
+        cls.win.deleteLater()
+        QCoreApplication.sendPostedEvents(None, 0)
+        super().tearDownClass()
+
+    def test_button_corners_normal_and_primary_10_small_6(self) -> None:
+        for name in ("dark", "light"):
+            dlg = theme_mod.dialog_stylesheet(name)
+            for selector in ("QPushButton", 'QPushButton#action_btn_primary, QPushButton[class="primary"]',
+                             'QPushButton#action_btn_secondary, QPushButton[class="secondary"]'):
+                self.assertIn("border-radius: 10px;", _strict_rule(dlg, selector), selector)
+            main = theme_mod.build_stylesheet(name)
+            for selector in ('QPushButton[role="nav"]', "QPushButton#btnPrev, QPushButton#btnNext",
+                             'QPushButton[role="icon"]', 'QPushButton[role="sys"]'):
+                self.assertIn("border-radius: 6px;", _strict_rule(main, selector), selector)
+
+    def test_combo_and_folder_field_are_36_px(self) -> None:
+        from app.ui.settings_dialog import SettingsDialog
+
+        for name in ("dark", "light"):
+            self.win.theme = name
+            self.win.apply_theme()
+            dlg = SettingsDialog(self.win)
+            self.addCleanup(dlg.deleteLater)
+            dlg.show()
+            pump(40)
+            self.assertEqual((dlg.combo_lang.height(), dlg.combo_theme.height()), (36, 36), name)
+            dlg._switch_tab(1)
+            pump(20)
+            self.assertEqual(dlg.txt_folder.height(), 36, name)
+            # kaydırmasız "Genel" sayfası 36 px kutular ve 12 px ipuçlarıyla ~600 px ister (gerçek Segoe UI ile ölçüldü)
+            self.assertGreaterEqual(dlg.minimumHeight(), 680)
+            dlg.close()
+
+    def test_combo_arrow_is_the_shared_chevron(self) -> None:
+        from PyQt6.QtGui import QImage
+
+        for name in ("dark", "light"):
+            pal = theme_mod.palette(name)
+            qss = theme_mod.dialog_stylesheet(name)
+            drop = _strict_rule(qss, "QComboBox#card_control::drop-down")
+            for decl in ("subcontrol-origin: padding;", "subcontrol-position: center right;", "width: 28px;",
+                         "border: none;", "background: transparent;"):
+                self.assertIn(decl, drop)
+            arrow = _strict_rule(qss, "QComboBox#card_control::down-arrow")
+            self.assertIn(f"lumina_chev_{pal['text_muted'].lstrip('#').lower()}_x4.png", arrow)
+            self.assertIn("width: 12px; height: 12px;", arrow)
+            self.assertNotRegex(qss, r"::(down-arrow|drop-down):(hover|on|disabled|pressed)",
+                                "ok üzerine gelince/açıkken/pasifken değişmez (eski 1 px aşağı kayma yok)")
+            img = QImage(theme_mod.combo_arrow_path(pal["text_muted"]))
+            s = 4
+            self.assertEqual((img.width(), img.height()), (12 * s, 12 * s))
+            self.assertEqual(img.pixelColor(6 * s, 8 * s - 1).name(), QColor(pal["text_muted"]).name(), "uç")
+            self.assertGreater(img.pixelColor(round(4.25 * s), round(6.25 * s)).alpha(), 200, "sol kol")
+            self.assertEqual(img.pixelColor(6 * s, round(5.5 * s)).alpha(), 0, "içi boş")
+            self.assertEqual(img.pixelColor(2, 2).alpha(), 0)
+
+    def test_scrollbar_is_the_shared_spec(self) -> None:
+        for name, track, handle in (("dark", "#1f1f1f", "#575757"), ("light", "#d8d8d8", "#a3a3a3")):
+            accent = theme_mod.palette(name, "violet")["accent"]
+            qss = theme_mod.build_stylesheet(name, "violet")
+            for axis, size, minimum in (("vertical", "width", "min-height"), ("horizontal", "height", "min-width")):
+                bar = _strict_rule(qss, f"QScrollBar:{axis}")
+                for decl in (f"background-color: {track};", f"{size}: 10px;", "margin: 2px;", "border-radius: 5px;"):
+                    self.assertIn(decl, bar, (name, axis))
+                grip = _strict_rule(qss, f"QScrollBar::handle:{axis}")
+                for decl in (f"background: {handle};", "border-radius: 5px;", f"{minimum}: 28px;"):
+                    self.assertIn(decl, grip, (name, axis))
+                hover = _strict_rule(qss, f"QScrollBar::handle:{axis}:hover, QScrollBar::handle:{axis}:pressed")
+                self.assertIn(f"background: {accent};", hover)
+
+    def test_font_roles(self) -> None:
+        for name in ("dark", "light"):
+            main = theme_mod.build_stylesheet(name)
+            self.assertIn("font-size: 13px;", _strict_rule(main, "QLabel"), "gövde 10 pt")
+            details = _strict_rule(main, "QLabel#detailsTitle")
+            self.assertIn("font-size: 16px;", details)
+            self.assertIn("font-weight: 700;", details)
+            nav = _strict_rule(main, 'QPushButton[role="nav"]')
+            self.assertIn("font-size: 12px;", nav, "küçük/araç düğmesi 9 pt")
+            self.assertIn("font-weight: 600;", nav)
+            dlg = theme_mod.dialog_stylesheet(name)
+            for selector in ("QLabel#card_subtitle", "QLabel#hint_label"):
+                self.assertIn("font-size: 12px;", _strict_rule(dlg, selector), selector)
+            for selector in ("QComboBox#card_control", "QLineEdit#txt_folder"):
+                self.assertIn("font-size: 13px;", _strict_rule(dlg, selector), selector)
+            self.assertRegex(dlg, r"QCheckBox#card_checkbox\s*\{[^}]*font-size: 13px;")
+            for selector in ("QPushButton", 'QPushButton#action_btn_primary, QPushButton[class="primary"]',
+                             'QPushButton#action_btn_secondary, QPushButton[class="secondary"]'):
+                rule = _strict_rule(dlg, selector)
+                self.assertIn("font-size: 13px;", rule, selector)
+                self.assertIn("font-weight: 600;", rule, selector)
+
+
 # ------------------------------------------------------------------------------------------------ saklama
 class StorageTest(unittest.TestCase):
     def test_crash_log_has_the_same_name_and_place_as_the_other_apps(self) -> None:

@@ -186,25 +186,28 @@ def combo_arrow_path(color: str) -> str:
 
     Stil sayfası kutuya kenarlık/zemin verince Windows stili aşağı ok düğmesini eski kabartmalı kutu olarak çizer
     (koyu temada siyah üstüne siyah ok). Ok tema rengiyle bir kez üretilir ve geçici klasörde saklanır.
+    FlexiKey, MediaCompressor ve TransferTCP ile aynı çizim: 12x12 kutuda (2.5,4.5)-(6,8)-(9.5,4.5), 1.5 px yuvarlak
+    uçlu kalem, 4x PNG; üzerine gelince, açıkken ve pasifken değişmez.
     """
     import os
     import tempfile
 
-    name = "lumina_chev_" + color.lstrip("#").lower() + ".png"
+    s = 4
+    name = f"lumina_chev_{color.lstrip('#').lower()}_x{s}.png"
     path = os.path.join(tempfile.gettempdir(), name)
     if not os.path.isfile(path):
         from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QColor, QImage, QPainter, QPen
 
-        img = QImage(32, 32, QImage.Format.Format_ARGB32_Premultiplied)
+        img = QImage(12 * s, 12 * s, QImage.Format.Format_ARGB32_Premultiplied)
         img.fill(Qt.GlobalColor.transparent)
         painter = QPainter(img)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor(color), 3.6)
+        pen = QPen(QColor(color), 1.5 * s)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
-        painter.drawPolyline([QPointF(8, 12.5), QPointF(16, 20.5), QPointF(24, 12.5)])
+        painter.drawPolyline([QPointF(2.5 * s, 4.5 * s), QPointF(6 * s, 8 * s), QPointF(9.5 * s, 4.5 * s)])
         painter.end()
         tmp = f"{path}.{os.getpid()}.tmp"
         try:
@@ -283,10 +286,9 @@ def combo_arrow_qss(selector: str, color: str) -> str:
     return f"""
         {selector}::drop-down {{
             subcontrol-origin: padding; subcontrol-position: center right;
-            width: 26px; border: none; background: transparent;
+            width: 28px; border: none; background: transparent;
         }}
         {selector}::down-arrow {{ image: url("{combo_arrow_path(color)}"); width: 12px; height: 12px; }}
-        {selector}::down-arrow:on {{ top: 1px; }}
     """
 
 
@@ -329,7 +331,7 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
         sep = a(0.08)
         tip_bg, tip_border = "rgba(37, 37, 37, 0.96)", a(0.18)
         panel_border, rule = a(0.10), a(0.12)
-        scroll, scroll_hover = a(0.20), a(0.35)
+        scroll_track, scroll = "#1f1f1f", "#575757"
         details_title, details_value = p["text"], p["text"]
         file_chip_name = p["text"]
         dis_text = a(0.30)
@@ -359,7 +361,7 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
         sep = a(0.08)
         tip_bg, tip_border = "rgba(255, 255, 255, 0.96)", a(0.16)
         panel_border, rule = a(0.10), a(0.12)
-        scroll, scroll_hover = a(0.20), a(0.35)
+        scroll_track, scroll = "#d8d8d8", "#a3a3a3"
         details_title, details_value = p["text"], p["text"]
         file_chip_name = p["ink"]
         dis_text = a(0.30)
@@ -392,7 +394,7 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
             background-color: {nav_bg};
             color: {nav_text};
             border: 1px solid {nav_border};
-            border-radius: 8px;
+            border-radius: 6px;
             padding: 4px 12px;
             min-width: 52px;
             font-size: 12px;
@@ -413,7 +415,7 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
             max-width: 34px;
             background-color: {arrow_bg};
             border: 1px solid {arrow_border};
-            border-radius: 8px;
+            border-radius: 6px;
             padding: 0px;
         }}
         QPushButton#btnPrev:hover, QPushButton#btnNext:hover {{
@@ -428,7 +430,7 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
             background-color: {icon_bg};
             color: {nav_text};
             border: 1px solid {icon_border};
-            border-radius: 8px;
+            border-radius: 6px;
             padding: 4px;
         }}
         QPushButton[role="icon"][compact="true"] {{
@@ -634,7 +636,7 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
             background: transparent;
             border: none;
         }}
-        QLabel#detailsTitle {{ font-size: 16px; font-weight: 800; color: {details_title}; }}
+        QLabel#detailsTitle {{ font-size: 16px; font-weight: 700; color: {details_title}; }}
         QLabel#detailsKey {{ font-size: 11px; font-weight: 600; color: {p['text_muted']}; letter-spacing: 0.3px; }}
         QLabel#detailsValue {{ font-size: 13px; color: {details_value}; }}
         QFrame#detailsRule {{
@@ -643,33 +645,34 @@ def build_stylesheet(theme: str, accent: str | None = None) -> str:
             max-height: 1px;
         }}
         QScrollArea {{ background: transparent; border: none; }}
+        /* kaydırma çubuğu: dört uygulamada aynı — 10 px, nötr tutamaç, üzerine gelince/basılıyken vurgu */
         QScrollBar:vertical {{
-            background-color: transparent;
-            width: 8px;
+            background-color: {scroll_track};
+            width: 10px;
             margin: 2px;
-            border-radius: 4px;
+            border-radius: 5px;
         }}
         QScrollBar::handle:vertical {{
             background: {scroll};
-            border-radius: 4px;
-            min-height: 24px;
+            border-radius: 5px;
+            min-height: 28px;
         }}
-        QScrollBar::handle:vertical:hover {{
-            background: {scroll_hover};
+        QScrollBar::handle:vertical:hover, QScrollBar::handle:vertical:pressed {{
+            background: {p['accent']};
         }}
         QScrollBar:horizontal {{
-            background-color: transparent;
-            height: 8px;
+            background-color: {scroll_track};
+            height: 10px;
             margin: 2px;
-            border-radius: 4px;
+            border-radius: 5px;
         }}
         QScrollBar::handle:horizontal {{
             background: {scroll};
-            border-radius: 4px;
-            min-width: 24px;
+            border-radius: 5px;
+            min-width: 28px;
         }}
-        QScrollBar::handle:horizontal:hover {{
-            background: {scroll_hover};
+        QScrollBar::handle:horizontal:hover, QScrollBar::handle:horizontal:pressed {{
+            background: {p['accent']};
         }}
         QScrollBar::add-line, QScrollBar::sub-line,
         QScrollBar::add-page, QScrollBar::sub-page {{
@@ -732,15 +735,16 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
             border-radius: 8px;
         }}
         QLabel#card_title {{ color: {p['text']}; font-size: 13px; font-weight: 700; }}
-        QLabel#card_subtitle {{ color: {p['text_muted']}; font-size: 11px; }}
-        QLabel#hint_label {{ color: {p['text_muted']}; font-size: 11px; }}
+        QLabel#card_subtitle {{ color: {p['text_muted']}; font-size: 12px; }}
+        QLabel#hint_label {{ color: {p['text_muted']}; font-size: 12px; }}
         QComboBox#card_control {{
             background-color: {p['sunken']};
             border: 1px solid {edge};
             border-radius: 6px;
             color: {p['text']};
-            padding: 6px 10px;
-            font-size: 12px;
+            padding: 0px 10px;
+            min-height: 34px;     /* + 1 px kenar x2 = 36 px: dört uygulamada açılır liste yüksekliği */
+            font-size: 13px;
             font-weight: 500;
         }}
         QComboBox#card_control:hover {{ border-color: {p['accent_edge']}; }}
@@ -754,23 +758,25 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
             border-radius: 6px;
         }}
         {checkbox_qss("QCheckBox#card_checkbox", p)}
-        QCheckBox#card_checkbox {{ font-size: 12px; font-weight: 500; }}
+        QCheckBox#card_checkbox {{ font-size: 13px; font-weight: 500; }}
         QLineEdit#txt_folder {{
             background-color: {p['sunken']};
             border: 1px solid {edge};
             border-radius: 6px;
             color: {p['text']};
-            padding: 6px 10px;
-            font-size: 12px;
+            padding: 0px 10px;
+            min-height: 34px;     /* açılır listeyle aynı 36 px */
+            max-height: 34px;
+            font-size: 13px;
         }}
         QLineEdit#txt_folder:focus {{ border-color: {p['accent_edge']}; }}
         QPushButton#action_btn_primary, QPushButton[class="primary"] {{
             background-color: {p['fill']};
             color: {p['on_fill']};
             border: none;
-            border-radius: 6px;
+            border-radius: 10px;
             font-size: 13px;
-            font-weight: 700;
+            font-weight: 600;
             padding: 6px 14px;
         }}
         QPushButton#action_btn_primary:hover, QPushButton[class="primary"]:hover {{
@@ -785,9 +791,9 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
             background-color: {btn2_bg};
             border: 1px solid {edge};
             color: {p['text']};
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: 500;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 600;
             padding: 6px 12px;
         }}
         QPushButton#action_btn_secondary:hover, QPushButton[class="secondary"]:hover {{
@@ -831,10 +837,10 @@ def dialog_stylesheet(theme: str, accent: str | None = None) -> str:
             background-color: {btn2_bg};
             color: {p['text']};
             border: 1px solid {edge};
-            border-radius: 6px;
+            border-radius: 10px;
             padding: 7px 16px;
-            font-size: 12px;
-            font-weight: 500;
+            font-size: 13px;
+            font-weight: 600;
         }}
         QPushButton:hover {{ background-color: {btn2_hover}; border-color: {p['accent_edge']}; }}
         QPushButton:disabled {{

@@ -100,7 +100,8 @@ class ComboArrowThemeTest(_Base):
             path = theme.combo_arrow_path(pal["text_muted"])
             img = QImage(path)
             self.assertFalse(img.isNull(), path)
-            self.assertEqual(img.pixelColor(16, 20).name(), QColor(pal["text_muted"]).name())
+            s = img.width() // 12  # 12x12 kutu, 4x çizim (dört uygulamada aynı ok)
+            self.assertEqual(img.pixelColor(6 * s, 8 * s - 1).name(), QColor(pal["text_muted"]).name())
             self.assertEqual(img.pixelColor(2, 2).alpha(), 0)
         self.assertIn("QComboBox#mb_input::down-arrow", message_box._qss(message_box.current_palette()))
 

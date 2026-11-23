@@ -108,9 +108,10 @@ class SettingsDialog(ChromeDialog):
         self._merge_worker: MergeWorker | None = None
 
         self.setWindowTitle(self._t("settings_window_title"))
-        # "Genel" sayfası (5 kart) ~560 px ister; daha azında kartlar (ve açılır kutular) sıkışıp metni kırpardı
-        self.resize(660, 640)
-        self.setMinimumSize(660, 640)
+        # "Genel" sayfası (5 kart) ~600 px ister (36 px açılır kutular, 12 px ipuçları — dört uygulamada aynı ölçü);
+        # daha azında kartlar (ve açılır kutular) sıkışıp metni kırpardı
+        self.resize(660, 680)
+        self.setMinimumSize(660, 680)
 
         self._build_ui()
         self._apply_style()
